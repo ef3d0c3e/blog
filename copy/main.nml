@@ -1,5 +1,3 @@
-{<block <link rel="stylesheet" href="../style.css">>}
-
 # Introduction
 
 If you've ever done system programming in C, you might have noticed that the standard lacks a function to copy files.
