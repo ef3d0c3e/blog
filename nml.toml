@@ -1,0 +1,7 @@
+db_path = "cache.db"
+output_path = "output"
+
+[output]
+type = "html"
+language = "en-us"
+css = "style.css"
