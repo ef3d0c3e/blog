@@ -93,7 +93,7 @@ For writing, it's even more sophisticated. Due to the Page Cache in the kernel, 
 Instead the kernel may decide to schedule writing to the file later on, when the CPU becomes less busy. In the meantime, if another process wants to read from the file, then the kernel will simply return the cached version.
 This has a lot of implications, for instance, if your computer unexpectedly shuts down before the kernel can flush the writes, they may be definitely lost. That's why most database softwares avoid using the kernel's built-in cache. However, for most purposes, caching is fine and improves performance.
 
-![copy_posix_box_plot](./plot/posix_copy.svg) As you can see, it performs *very poorly*. If I added `cp` on the graph, it wouldn't even show up as it's much faster than this function. The cost of copying a single byte comes up to about ~1.3μs, which isn't particularly fast, not to say *very* slow.
+![copy_posix_box_plot](output://plot/posix_copy.svg) As you can see, it performs *very poorly*. If I added `cp` on the graph, it wouldn't even show up as it's much faster than this function. The cost of copying a single byte comes up to about ~1.3μs, which isn't particularly fast, not to say *very* slow.
 
 # Copy in 100\% standard C
 
@@ -167,7 +167,7 @@ Under the hood, most implementations will attempt to efficiently manage their in
 In practice, libc's buffering is not meant to squeeze performance, but to make the experience less painful.
 For instance, when writing to stdout or stderr, libc will flush every time a `\\n` is encountered.
 
-![copy_stdio_box_plot](./plot/stdio_copy.svg) The graph is similar as POSIX copy, but it's still far from matching `cp`'s performance.
+![copy_stdio_box_plot](output://plot/stdio_copy.svg) The graph is similar as POSIX copy, but it's still far from matching `cp`'s performance.
 
 If you pay attention to details, you may have noticed that the time is roughly the same for all sizes under 1kB.
 When I run the program under `strace`, I notice that:
@@ -211,19 +211,19 @@ These buffers usually allocate at least one memory page, which corresponds to th
 So it would look like `glibc` is doing a great job at buffering.
 
 In fact, I computed a speedup comparison of stdio vs POSIX copying:
-![posix_stdio_speedup](./plot/speedup_stdio_vs_posix.svg) Even for smaller file sizes, it outperforms POSIX copy. For larger sizes it blows it out of the competition.
+![posix_stdio_speedup](output://plot/speedup_stdio_vs_posix.svg) Even for smaller file sizes, it outperforms POSIX copy. For larger sizes it blows it out of the competition.
 
 As you can see, using stdio really did improve copying speed. Once the file size exceeds 4KiB, the copy is about **60x** faster. That's a huge improvement, but we're still lagging far behind the simple `cp` utility.
 However, stdio is not always your friend.
 I ran the same benchmarks as before, this time using sizes close to the page boundary. The results speak for themselves:
 
-![page_stdio_copy](./plot/page_stdio_copy.svg)
+![page_stdio_copy](output://plot/page_stdio_copy.svg)
 
 There seems to be a significant overhead for 4096 byes, which is odd since this is the page boundary. Meaning that the same number of syscalls should be made than for copying 4095 bytes.
 What gets really strange, is the fact that it's slower than copying 4097 bytes. Looking at `strace`, 4097 bytes does cause additional system calls, since stdio will now have to read two pages.
 This is a hint, that what is slowing us down is not system calls, but stdio itself. To be sure of that, I set stdio's buffer size to 8kiB:
 
-![page_stdio_copy](./plot/page_stdio_lb_copy.svg) Using `setvbuf` we're able to set the buffer's size for stdio. Note that the time includes the overhead caused by calling `setvbuf`.
+![page_stdio_copy](output://plot/page_stdio_lb_copy.svg) Using `setvbuf` we're able to set the buffer's size for stdio. Note that the time includes the overhead caused by calling `setvbuf`.
 
 This tells us that stdio is the culprit, but this change only moved the problem further down the line.
 Performing copies of about 8192 bytes will highlight the same issues as before.
@@ -278,12 +278,12 @@ In theory, since our previous POSIX copy was being slowed down by the high numbe
 If the bottleneck really was the number of system calls, this one should be much faster since we've reduced the number of system calls by about 8192.
 
 And here are the results:
-![buffered_posix](./plot/posix_buffered_copy.svg) For sizes up to 4096, the time stays roughly the same, which is expected since they all finish within one call to `read` + `write`.
+![buffered_posix](output://plot/posix_buffered_copy.svg) For sizes up to 4096, the time stays roughly the same, which is expected since they all finish within one call to `read` + `write`.
 
 What comes next, is naturally to test different buffer sizes and see how they affect the copying speed.
 Below is a benchmark of 20 different buffer sizes, to see how they affect the average copying speed:
 
-![buffered_posix_buffers](./plot/buffer_size_all.svg)
+![buffered_posix_buffers](output://plot/buffer_size_all.svg)
 
 As expected, when the buffer is greater then number of bytes to copy, it performs extremely well.
 However, when the file gets larger, the smaller buffer sizes are definitely slowing down the copy.
@@ -355,7 +355,7 @@ The kernel doesn't just split requests for fairness. The main reason is that I/O
 As stated earlier, since we want to do as little as possible I/O operations (those are slow), we batch multiple requests in order to issue a single read.
 
 For really large buffers, we start to see diminishing returns:
-![buffered_posix_buffers_10M](./plot/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes
+![buffered_posix_buffers_10M](output://plot/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes
 
 # Summary
 
