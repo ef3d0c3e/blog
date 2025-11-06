@@ -1,11 +1,27 @@
+:set latex.main.fontsize = 9
+:set latex.main.preamble = """
+\usepackage{xcolor, tikz, pgfplots}
+\usepgfplotslibrary{patchplots}
+\definecolor{__color1}{HTML}{d5d5d5}
+\everymath{\color{__color1}\displaystyle}
+\pgfplotsset{compat=1.18}
+\usepackage{cmbright}
+\SetSymbolFont{largesymbols}{normal}{OMX}{iwona}{m}{n}
+\usepackage[T1]{fontenc}
+"""
+:set latex.main.block_prepend = "\color{__color1}"
+
 # Introduction
 
 If you've ever done system programming in C, you might have noticed that the standard lacks a function to copy files.
 In fact, there's no single function like ``C, copyfile(const char *from, const char *to, int flags)``.
 At first, it looks like there's a hole in the standard library, since we can open, read and write to files, all within the boundaries of the C standard library.
 Using only these, it's possible to write our very own `copyfile` function, but is this really a good idea?
-After all, I/O operations in the standard library are *buffered*, meaning it should be fast.
-But C gives us a plethora of other ways to make it work. Especially POSIX and Linux, which give us tons of way to perform I/O operations on files.
+Such a broad question can simply be answered by 'No'.
+If you want the copied file to inherit the original file's permission, symlink status, owners etc.
+Then the C standard library doesn't give us the tools do to that.
+However if what you want is just a way to copy the 'content' of a regular file to another, then we have plenty of tools to work with.
+Especially when you consider POSIX and Linux, which give us tons of way to perform I/O operations on files.
 
 In this article, I'll explore 8 ways to copy files on Linux, and I'll discuss the pros and cons of each methods.
 
@@ -167,7 +183,7 @@ Under the hood, most implementations will attempt to efficiently manage their in
 In practice, libc's buffering is not meant to squeeze performance, but to make the experience less painful.
 For instance, when writing to stdout or stderr, libc will flush every time a `\\n` is encountered.
 
-![copy_stdio_box_plot](output://plot/stdio_copy.svg) The graph is similar as POSIX copy, but it's still far from matching `cp`'s performance.
+![copy_stdio_box_plot](output://plot/stdio_copy.svg) The graph is similar to POSIX copy, but it's still far from matching `cp`'s performance.
 
 If you pay attention to details, you may have noticed that the time is roughly the same for all sizes under 1kB.
 When I run the program under `strace`, I notice that:
@@ -204,7 +220,7 @@ Under Linux 2.4, transfer sizes, and the alignment of the user buffer and the fi
 the logical block size of the file system. Under Linux 2.6, alignment to 512-byte boundaries suffices.
 ``
 
-Since the logical block size for Ext4 is 512, the kernel can't read less than 512 bytes at once.
+Since the logical block size for Ext4 is 4096, the kernel can't read less than 4096 bytes at once.
 However the story doesn't end here.
 Not only does stdio use buffering, the kernel page cache still applies when stdio calls to `read` or `write`.
 These buffers usually allocate at least one memory page, which corresponds to that 4096 bytes that `read` is invoked with.
@@ -278,7 +294,8 @@ In theory, since our previous POSIX copy was being slowed down by the high numbe
 If the bottleneck really was the number of system calls, this one should be much faster since we've reduced the number of system calls by about 8192.
 
 And here are the results:
-![buffered_posix](output://plot/posix_buffered_copy.svg) For sizes up to 4096, the time stays roughly the same, which is expected since they all finish within one call to `read` + `write`.
+![buffered_posix](output://plot/posix_buffered_copy.svg) For sizes up to 4096, the time stays roughly the same, which is expected since they all finish within one call to `read` + `write`. \
+Then the relationship becomes linear.
 
 What comes next, is naturally to test different buffer sizes and see how they affect the copying speed.
 Below is a benchmark of 20 different buffer sizes, to see how they affect the average copying speed:
@@ -290,9 +307,17 @@ However, when the file gets larger, the smaller buffer sizes are definitely slow
 It would look like it's always optimal to use a very large buffer.
 Buffer size 64k is pretty much outperforming every other sizes, but there's a caveat for that.
 
-For one, calling `read` will always force the kernel to read the requested number of bytes.
+For one, larger buffers require more memory and may greatly exceed the size of the read file.
+As stated previously, due to ext4's restrictions, a file may not occupy less that 4kiB of disk space, so that is a hint that our buffer size should be at least 4kiB.
+However using a 64kiB buffer to read such small files will waste a large quantity of memory.
+And while memory is cheap, cache is not.
+If you buffer fits in cache then it will perform better than having only ony a fraction of the buffer in cache.
+Looking at cachegrind, we get 0.08\% cache misses for a buffer of 64kiB, while a buffer of 8192 gets 8 times less.
+
+
+The second reason is that calling `read` will always force the kernel to read the requested number of bytes.
 In theory that is a good thing, if you know the exact size of the file, you can allocate a large-enough buffer and read it in one system call.
-However, the kernel won't always follow your plan.
+However, the kernel won't always do exactly as you planned.
 When you request for data to be read, that request gets split into 4kiB pages and stored in the kernel's [I/O Scheduler](https://en.wikipedia.org/wiki/I%2FO_scheduling).
 Then it's up to the kernel to decide when to honor these requests.
 It may decide to read a few pages for your process, then read another page for another process.
@@ -300,7 +325,7 @@ This what's called **fairness**, and it's a major factor into making your operat
 E.g no single process may block I/O for all others.
 
 Here's an example of how that might work:
-``Plain Text
+``[max_lines=100] Plain Text
 ┌─────────────┐      ┌────────────┐               ┌──────────┐
 │  Process A  │      │   Kernel   │               │   Disk   │
 └─────────────┘      └────────────┘               └──────────┘
@@ -350,12 +375,57 @@ Here's an example of how that might work:
       │<───────────────────┤                           │
       ┊                    ┊                           ┊
 ``
+This is just a simple model, in reality a lot more goes on.
 
 The kernel doesn't just split requests for fairness. The main reason is that I/O is faster when batched.
 As stated earlier, since we want to do as little as possible I/O operations (those are slow), we batch multiple requests in order to issue a single read.
 
-For really large buffers, we start to see diminishing returns:
+For really large buffers, we start to see these diminishing returns:
 ![buffered_posix_buffers_10M](output://plot/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes
+
+From these informations, we will derive the two following numbers:
+ * the overhead of system calls: the total time spent by the program while performing syscalls;
+ * the overhead of cache misses: times lost by cache misses due to our buffers being too large.
+
+## Measuring system calls overhead
+
+The system calls overhead can be defined as follows:
+
+$T_{syscalls} = \frac{\mathtt{file\;size}}{\mathtt{buffer\;size}} \cdot t_{syscall\;read} + \frac{\mathtt{file\;size}}{\mathtt{buffer\;size}} \cdot t_{syscall\;write}$
+
+*We perform one `read` plus one `write` system call for every piece of data we need to transfer.*
+
+In order to determine the values of $t_{syscall\;read}$ and $t_{syscall\;write}$ accurately, I'll consider these first order approximations:
+ * $t_{syscall\;read} = \mathtt{buffer\;size} \cdot f_{r} + c_{r}$, where $f_{r}$ and $c_{r}$ are constants;
+ * $t_{syscall\;write} = \mathtt{buffer\;size} \cdot f_{w} + c_{w}$, where $f_{w}$ and $c_{w}$ are constants.
+
+Constants $c$ should encapsulate the constant overhead of perfoming system calls.
+Constants $f$ should represent how much overhead is required for each read/written bytes.
+
+To test out this hypothesis, I'm gonna plot a micro benchmark benchmarking every read and write, then we'll see if a linear regression fits the data.
+In that case, the slope and intercept will give the $f$ and $c$ coefficients respectively.
+
+
+![buffered_posix_read_oh](output://plot/buffer_read_oh.svg) This is the overhead of each read calls for reading a 10MB file. \
+Note how the distribution is multi-modal, this is because every time about 128kiB is read, the kernel pre-fetches the next 128kiB piece of data to be available for later reads. \
+This phenomenon is clearly visible in the 8192 buffer size, since every 8 reads, one read will takes significantly longer than the others. \
+Then the kernel decides to start fetching 256kiB at once, to speed up things even further.
+
+The slope is roughly `2.58ns / byte`, meaning that every additional byte adds about 2.6 nanoseconds of read time.
+The intercept is negative, which at first seems weirs, but we have to factor in the fact that the distribution is multi-modal.
+There is a large number of read that will take about 100x longer to return.
+Meaning that the base per-syscall overhead becomes negligible.
+
+![buffered_posix_write_oh](output://plot/buffer_write_oh.svg) This is the overhead of each write calls for reading a 10MB file. \
+It looks like it's faster to write than read a file. \
+The main reason is that kernel is buffering all writes. \
+If the kernel were actually syncing when we call write, we would see a multi-modal distribution, like what happened with `read`.
+
+Due to the fact that the kernel is buffering all writes, what we see it pure a system-call scenario, without I/O.
+This confirms that for every system call, there will be a 794 ns overhead (round trip), then it takes 0.56 nanoseconds per bytes copied.
+That 0.56 nanoseconds matches the overhead for copying a buffer (e.g through `memcpy`).
+
+
 
 # Summary
 
@@ -378,6 +448,7 @@ A later function checks that the copied file's content match that of the origina
  * Drive: WDC WDS500G1R0B
  * Filesystem: Ext4 behind LVM+Luks2
 
+As it is not possible to control how SDDs cache data, all tests were run once before recording their data.
 
 To run individual benchmark, compile the `copy.c` file with the following flags:
 

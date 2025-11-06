@@ -133,6 +133,34 @@ end:
 	close(fd_in);
 }
 
+/** Copy buffered + align */
+void
+copy_posix_buffered_aligned(const char* in, const char* out)
+{
+	void *buf;
+	if (posix_memalign(&buf, 4096, BUFFER_SIZE) == -1)
+		return;
+	int fd_in = open(in, O_RDONLY);
+	int fd_out = open(out, O_WRONLY | O_CREAT, 0666);
+
+	while (1) {
+		ssize_t nread = read(fd_in, buf, BUFFER_SIZE);
+		if (nread <= 0)
+			break;
+		size_t pos = 0;
+		while (pos != (size_t)nread) {
+			ssize_t nwrite = write(fd_out, buf + pos, (size_t)nread - pos);
+			if (nwrite < 0)
+				goto end;
+			pos += (size_t)nwrite;
+		}
+	}
+end:
+	free(buf);
+	close(fd_out);
+	close(fd_in);
+}
+
 /** Copy buffered using stdio */
 void
 copy_buffered_stdio(const char* in, const char* out)

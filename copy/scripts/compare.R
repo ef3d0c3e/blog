@@ -93,7 +93,7 @@ p <- ggplot(long_df, aes(x = Label, y = Speedup, fill = Label)) +
                 width = 0.2, color = "black", inherit.aes = FALSE) +
   # Colors and legend
   scale_fill_manual(values = colors, name = "Bin (mean ± 99.5% CI)", labels = ci_df$Label) +
-  #scale_y_log10() +
+  scale_y_log10() +
   labs(title = paste("Speedup of", nameA, "over", nameB),
        x = "Data Size (bytes)",
        y = paste("Speedup (", nameA, "/", nameB, ")", sep="")) +

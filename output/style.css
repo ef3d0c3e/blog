@@ -20,8 +20,9 @@ body {
 }
 
 .code-block pre {
+	--line-height: 1.25em;
 	margin: 0;
-	line-height: 1.25em;
+	line-height: var(--line-height);
 	overflow-x: auto;
 }
 
@@ -32,7 +33,7 @@ body {
 }
 
 .code-block pre code {
-	max-height: 38em;
+	max-height: calc(38 * var(--line-height));
 	margin-bottom: 0.2em;
 	overflow: auto;
 	background-color: #0f141a;
