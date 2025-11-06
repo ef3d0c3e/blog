@@ -381,11 +381,13 @@ The kernel doesn't just split requests for fairness. The main reason is that I/O
 As stated earlier, since we want to do as little as possible I/O operations (those are slow), we batch multiple requests in order to issue a single read.
 
 For really large buffers, we start to see these diminishing returns:
-![buffered_posix_buffers_10M](output://plot/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes
+![buffered_posix_buffers_10M](output://plot/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes 
 
-From these informations, we will derive the two following numbers:
- * the overhead of system calls: the total time spent by the program while performing syscalls;
- * the overhead of cache misses: times lost by cache misses due to our buffers being too large.
+Checking with cachegrid, we can see that cache misses start appearing for buffers over 64kiB.\
+Even though misses are small, they may evict other relevant data from caches, which can lead to a slowdown further down the line.
+
+From this information, we will derive a number: the overhead of system calls, the total time spent by the program while performing syscalls.
+That number should help us decide which buffer size is optimal for copying a file of given size.
 
 ## Measuring system calls overhead
 
@@ -399,33 +401,63 @@ In order to determine the values of $t_{syscall\;read}$ and $t_{syscall\;write}$
  * $t_{syscall\;read} = \mathtt{buffer\;size} \cdot f_{r} + c_{r}$, where $f_{r}$ and $c_{r}$ are constants;
  * $t_{syscall\;write} = \mathtt{buffer\;size} \cdot f_{w} + c_{w}$, where $f_{w}$ and $c_{w}$ are constants.
 
-Constants $c$ should encapsulate the constant overhead of perfoming system calls.
+Constants $c$ should encapsulate the constant overhead of performing system calls.
 Constants $f$ should represent how much overhead is required for each read/written bytes.
 
-To test out this hypothesis, I'm gonna plot a micro benchmark benchmarking every read and write, then we'll see if a linear regression fits the data.
+To test out this hypothesis, I will run a micro benchmark measuring every read and write, then we'll see if a linear regression fits the data.
 In that case, the slope and intercept will give the $f$ and $c$ coefficients respectively.
 
 
 ![buffered_posix_read_oh](output://plot/buffer_read_oh.svg) This is the overhead of each read calls for reading a 10MB file. \
-Note how the distribution is multi-modal, this is because every time about 128kiB is read, the kernel pre-fetches the next 128kiB piece of data to be available for later reads. \
+The timings are averaged on each run, 500 runs were performed for each buffer size. \
+Note how the distribution is multi-modal; this is because every time about 128kiB is read, the kernel pre-fetches the next 128kiB piece of data to be available for later reads. \
 This phenomenon is clearly visible in the 8192 buffer size, since every 8 reads, one read will takes significantly longer than the others. \
-Then the kernel decides to start fetching 256kiB at once, to speed up things even further.
+Then the kernel decides to start fetching 256kiB at once, to speed things up even further. \
+This phenomenon is highlighted by the fact that for buffers above 128kiB, the lower distribution shifts up.
 
-The slope is roughly `2.58ns / byte`, meaning that every additional byte adds about 2.6 nanoseconds of read time.
-The intercept is negative, which at first seems weirs, but we have to factor in the fact that the distribution is multi-modal.
-There is a large number of read that will take about 100x longer to return.
-Meaning that the base per-syscall overhead becomes negligible.
+The slope is roughly $2.50\,ns / byte$, meaning that every additional byte adds about $2.5\,ns$ of read time.
+The intercept, $1515\,ns$, is very large for a system call.
+But since the distribution is mostly multi-modal, that intercept should be interpreted with a grain of salt.
 
 ![buffered_posix_write_oh](output://plot/buffer_write_oh.svg) This is the overhead of each write calls for reading a 10MB file. \
-It looks like it's faster to write than read a file. \
+The timings are averaged on each run, 500 runs were performed for each buffer size. \
+It looks like it's faster to write than to read a file. \
 The main reason is that kernel is buffering all writes. \
 If the kernel were actually syncing when we call write, we would see a multi-modal distribution, like what happened with `read`.
 
-Due to the fact that the kernel is buffering all writes, what we see it pure a system-call scenario, without I/O.
-This confirms that for every system call, there will be a 794 ns overhead (round trip), then it takes 0.56 nanoseconds per bytes copied.
-That 0.56 nanoseconds matches the overhead for copying a buffer (e.g through `memcpy`).
+Due to the fact that the kernel is buffering all writes, what we see is a pure system-call scenario, without I/O.
+This confirms that for every system call, there will be a $103\,ns$ overhead (round trip), then it takes $0.58\,ns$ per bytes copied.
+That $0.58\,ns$ matches the overhead for copying a buffer (e.g through `memcpy`).
+
+Therefore, the simple first order approximation seems to fit the data correctly.
+We can then express the syscall overhead:
+$T_{syscall} = \mathtt{file\;size} \cdot \big(2.504\cdot 10^{-3} + 5.792\cdot 10^{-4} + \frac{1.515 + 0.103}{\mathtt{buffer\;size}} \big)$
+
+Looking at the terms, there's a constant factor that doesn't vary when we increase or decrease the buffer size. So the only term we can act on is $\frac{1.515 + 0.103}{\mathtt{buffer\;size}}$.
+It would look like we'd get better results by indefinitely increasing the buffer size, however in a real scenario, we can't have infinite buffers.
+Also this analysis doesn't show sizes where cache misses become a real problem.
+
+So what we want is a buffer size large enough, so that the constant syscall overhead becomes negligible compared to the per-byte copy overhead.
+
+Let's define $\epsilon$ as how much overhead from the per-syscall term we can tolerate over the per-byte term:
+
+$\epsilon \cdot (f_r + f_w) \ge \frac{c_r + c_w}{\mathtt{buffer\;size}} \\
+\iff \mathtt{buffer\;size} \ge \frac{c_r + c_w}{\epsilon \cdot (f_r + f_w)}$
+
+If we substitute $\epsilon = 1\%$, meaning we tolerate 1\% of overhead over the per-byte term:
+$\mathtt{buffer\;size} \ge 52478$. Rounding up to the nearest page boundaries: $\mathtt{buffer\;size} \ge 13 \cdot 4096 = 53248$.
+Therefore, to minimize the per-syscall overhead, we need a buffer that can hold at least 13 memory pages.
+But note that there are other ways to tackle this. For instance, using 16 pages would make the kernel readahead bytes become a multiple of our buffer size, thus triggering at regular number of read calls.
+However, this analysis doesn't describe what happens for small buffers ($< 4096\,B$), nor what happens for larger buffers ($> 256\,kiB$) where cache misses and kernel readahead spikes become dominant.
 
 
+Overall, buffering will improve reading performances quite drastically.
+Even for smaller files, a small buffer will already yield significant speedups.
+And for most applications, buffering alone is often sufficient to improve read/write speeds.
+That said, there's an unexplored blind spot in this method.
+I've kept writing about how the kernel does buffering on its end too, so what would happen if we could take advantage of the kernel's buffering?
+Since reading and writing are both system calls, could we delegate the copy entirely to the kernel?
+That's what we'll see in the next section.
 
 # Summary
 

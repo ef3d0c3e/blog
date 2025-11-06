@@ -58,6 +58,12 @@ subtitle_text <- sprintf(
   slope, intercept, r2
 )
 
+
+# Sample only half the points for the jitter plot, otherwise svg becomes too big.
+set.seed(1)
+per_measurement_sample <- per_measurement %>%
+  sample_frac(0.5)
+
 # Plot
 p <- ggplot() +
 	geom_violin(
@@ -66,7 +72,7 @@ p <- ggplot() +
 				fill = "skyblue", color = "gray", scale = "width", alpha = 1.0
 				) +
 	geom_jitter(
-				data = per_measurement,
+				data = per_measurement_sample,
 				aes(x = buffer_size, y = mean_time, color = "Measurement means"),
 				width = 0.05, height = 0, alpha = 0.6, size = 1.2
 				) +
@@ -96,7 +102,7 @@ p <- ggplot() +
 					   )
 					   ) +
 	labs(
-		 title = "Mean Read Time vs Buffer Size (2% trimmed)",
+		 title = "Read Time vs Buffer Size (2% trimmed)",
 		 subtitle = subtitle_text,
 		 x = "Buffer size (bytes)",
 		 y = "Read time (µs)"
