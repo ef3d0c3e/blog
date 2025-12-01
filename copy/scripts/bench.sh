@@ -3,9 +3,11 @@
 # A script to run selected benchmarks
 
 # Sizes to test
-sizes=("64" 2000 "128" 2000 "256" 1000 "512" 1000 "1K" 1000 "2K" 1000 "4K" 1000 "8K" 500 "16K" 500 "32K" 250 "64K" 250 "128K" 200 "256K" 150 "512K" 100 "1M" 100)
+#sizes=("64" 2000 "128" 2000 "256" 1000 "512" 1000 "1K" 1000 "2K" 1000 "4K" 1000 "8K" 500 "16K" 500 "32K" 250 "64K" 250 "128K" 200 "256K" 150 "512K" 100 "1M" 100)
 # Methods to test
-methods=(memcpy)
+#methods=(memcpy)
+sizes=("64" 2000 "128" 2000 "256" 1000 "512" 1000 "1K" 1000 "2K" 1000 "4K" 1000 "8K" 500 "16K" 500 "32K" 250 "64K" 250 "128K" 200 "256K" 150 "512K" 100 "1M" 100)
+methods=(splice_lb)
 
 here=$(dirname "$(realpath "$0")")
 cd "${here}/../src" || exit

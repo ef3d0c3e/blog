@@ -186,7 +186,7 @@ For instance, when writing to stdout or stderr, libc will flush every time a `\\
 ![copy_stdio_box_plot](output://plot/stdio_copy.svg) The graph is similar to POSIX copy, but it's still far from matching `cp`'s performance.
 
 If you pay attention to details, you may have noticed that the time is roughly the same for all sizes under 1kB.
-When I run the program under `strace`, I notice that:
+When I run the program under `strace`:
 ``Plain Text,
 [...]
 openat(AT_FDCWD, "in.bin", O_RDONLY)    = 3
@@ -226,7 +226,7 @@ Not only does stdio use buffering, the kernel page cache still applies when stdi
 These buffers usually allocate at least one memory page, which corresponds to that 4096 bytes that `read` is invoked with.
 So it would look like `glibc` is doing a great job at buffering.
 
-In fact, I computed a speedup comparison of stdio vs POSIX copying:
+To test that hypothesis, I computed a speedup comparison of stdio vs POSIX copying:
 ![posix_stdio_speedup](output://plot/speedup_stdio_vs_posix.svg) Even for smaller file sizes, it outperforms POSIX copy. For larger sizes it blows it out of the competition.
 
 As you can see, using stdio really did improve copying speed. Once the file size exceeds 4KiB, the copy is about **60x** faster. That's a huge improvement, but we're still lagging far behind the simple `cp` utility.
@@ -378,7 +378,7 @@ Here's an example of how that might work:
 This is just a simple model, in reality a lot more goes on.
 
 The kernel doesn't just split requests for fairness. The main reason is that I/O is faster when batched.
-As stated earlier, since we want to do as little as possible I/O operations (those are slow), we batch multiple requests in order to issue a single read.
+As stated earlier, since we want to do as little I/O operations as possible (those are slow), we batch multiple requests in order to issue a single read.
 
 For really large buffers, we start to see these diminishing returns:
 ![buffered_posix_buffers_10M](output://plot/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes 
@@ -415,7 +415,7 @@ This phenomenon is clearly visible in the 8192 buffer size, since every 8 reads,
 Then the kernel decides to start fetching 256kiB at once, to speed things up even further. \
 This phenomenon is highlighted by the fact that for buffers above 128kiB, the lower distribution shifts up.
 
-The slope is roughly $2.50\,ns / byte$, meaning that every additional byte adds about $2.5\,ns$ of read time.
+The slope is roughly $2.50\,\mathtt{ns} / \mathtt{byte}$, meaning that every additional byte adds about $2.5\,ns$ of read time.
 The intercept, $1515\,ns$, is very large for a system call.
 But since the distribution is mostly multi-modal, that intercept should be interpreted with a grain of salt.
 
@@ -459,6 +459,40 @@ I've kept writing about how the kernel does buffering on its end too, so what wo
 Since reading and writing are both system calls, could we delegate the copy entirely to the kernel?
 That's what we'll see in the next section.
 
+# Sendfile, splice and copy_file_range
+
+In this section, I'll write about these 3 specific linux system calls.
+`sendfile` is a system call to copy data from one file descriptor to another.
+`splice` is like `sendfile` except it operates on pipes.
+While `copy_file_range` copies files, letting you specify offsets and sizes.
+
+The main particularity of these system calls is that they perform copying entirely in kernel mode.
+There are no buffers you have to manage, no read/write separation, everything is handled by these calls.
+
+The main benefit of using these is that the kernel doesn't have to give you a buffer from reading, that you then send back to the kernel for writing.
+That's an added benefit since you also don't have to allocate any additional memory to store your buffers.
+That also means less cache pollution, since now there's only one buffer containing the data, which should also improve the per-byte overhead.
+
+As a side note, `copy_file_range` works differently on some filesystems.
+On [Btrfs](https://en.wikipedia.org/wiki/btrfs) copy-on-write is supported, meaning that no data is ever copied.
+Instead the files are marked as holding the same content, which means the copy will be performed only once one of them is modified.
+However that's not the case on Ext4, meaning the kernel is actually copying bytes.
+
+So here are the results for these 3 system calls:
+![copy_sendfile](output://plot/sendfile_copy.svg) Benchmark for `sendfile`
+![copy_splice](output://plot/splice_copy.svg) Benchmark for `splice`. A size of 1MiB was used for splice.
+![copy_copy_file_range](output://plot/copy_file_range_copy.svg) Benchmark for `copy_file_range`
+
+The first thing that we notice is that they all seem to have similar performances. In fact the regressions (for larger files) all have the same slope of $0.3\, \mathtt{ns}/\mathtt{byte}$.
+In order to better compare them, below is a comparative plot of the three methods:
+
+![speedup_kernel_copy](output://plot/speedup_kernel_copy.svg) `splice` was used as the baseline because it's the slowest of the threes. `sendfile` and `copy_file_range` seem to have the exact same performances, while being slightly faster than `splice`. However, they eventually match `splice` performances for larger buffers.
+
+In practice, `copy_file_range` is the most adapted for copying files, as the two others are generally used for other purposes.
+
+Comparing `copy_file_range` against buffered POSIX copy gives this graph:
+![speedup_copy_file_range](output://plot/speedup_copy_file_range.svg) All buffer sizes were compared against `copy_file_range`, yielding significant slowdowns for smaller buffers. However, even larger buffers experience significant slowdowns when the copied file becomes larger.
+
 # Summary
 
 < make summary of all methods, sum everything with pro/cons table >
@@ -466,7 +500,7 @@ That's what we'll see in the next section.
 # Going further
 
 In this article I've left out filesystem-level copy unexplored. These are special types of copy operations that rely on filesystem-specific features.
-For instance, [btrfs](https://en.wikipedia.org/wiki/Btrfs) has a copy-on-write feature. That means making a copy of a file is a trivial operation that doesn't even require reading the original file at all.
+For instance, [btrfs](https://en.wikipedia.org/wiki/btrfs) has a copy-on-write feature. That means making a copy of a file is a trivial operation that doesn't even require reading the original file at all.
 Instead, the filesystem marks both files as holding the same content, and the copy will only be performed if you modify either of those file.
 
 # Methodology

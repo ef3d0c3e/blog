@@ -137,8 +137,8 @@ end:
 void
 copy_posix_buffered_aligned(const char* in, const char* out)
 {
-	void *buf;
-	if (posix_memalign(&buf, 4096, BUFFER_SIZE) == -1)
+	void *buf = NULL;
+	if (posix_memalign(&buf, 4096, BUFFER_SIZE) == -1 || !buf)
 		return;
 	int fd_in = open(in, O_RDONLY);
 	int fd_out = open(out, O_WRONLY | O_CREAT, 0666);
@@ -237,6 +237,37 @@ copy_splice(const char* in, const char* out)
 	int fd_out = open(out, O_WRONLY | O_CREAT, 0666);
 	int pipefd[2];
 	pipe(pipefd);
+
+	while (1) {
+		ssize_t nread =
+		  splice(fd_in, NULL, pipefd[1], NULL, SPLICE_CHUNK, SPLICE_F_MORE | SPLICE_F_MOVE);
+		if (nread <= 0)
+			break;
+
+		ssize_t remaining = nread;
+		while (remaining > 0) {
+			ssize_t nwrite = splice(
+			  pipefd[0], NULL, fd_out, NULL, (size_t)remaining, SPLICE_F_MORE | SPLICE_F_MOVE);
+			if (nwrite <= 0)
+				goto end;
+			remaining -= nwrite;
+		}
+	}
+end:
+	close(pipefd[0]);
+	close(pipefd[1]);
+	close(fd_out);
+	close(fd_in);
+}
+
+void
+copy_splice_lb(const char* in, const char* out)
+{
+	int fd_in = open(in, O_RDONLY);
+	int fd_out = open(out, O_WRONLY | O_CREAT, 0666);
+	int pipefd[2];
+	pipe(pipefd);
+	fcntl(pipefd[0], F_SETPIPE_SZ, SPLICE_CHUNK);
 
 	while (1) {
 		ssize_t nread =

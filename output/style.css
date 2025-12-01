@@ -82,6 +82,11 @@ em {
 }
 
 /*** Media ***/
+.media {
+	margin-top: .8em;
+	margin-bottom: .8em;
+}
+
 p.media-refname {
 	color: #af2f5f;
 	font-weight: bold;
@@ -90,5 +95,11 @@ p.media-refname {
 .media p {
 	width: 80%;
 	margin: auto;
+	text-align: center;
+}
+
+.media-description {
+	margin-left: 2em;
+	margin-right: 2em;
 	text-align: center;
 }
