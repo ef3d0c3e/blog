@@ -23,7 +23,7 @@ Then the C standard library doesn't give us the tools do to that.
 However if what you want is just a way to copy the 'content' of a regular file to another, then we have plenty of tools to work with.
 Especially when you consider POSIX and Linux, which give us tons of way to perform I/O operations on files.
 
-In this article, I'll explore 8 ways to copy files on Linux, and I'll discuss the pros and cons of each methods.
+In this article, I'll explore 6 ways to copy files on Linux, and I'll discuss the pros and cons of each methods.
 
 #{posix_copy} POSIX copy
 
@@ -493,6 +493,8 @@ In practice, `copy_file_range` is the most adapted for copying files, as the two
 Comparing `copy_file_range` against buffered POSIX copy gives this graph:
 ![speedup_copy_file_range](output://plot/speedup_copy_file_range.svg) All buffer sizes were compared against `copy_file_range`, yielding significant slowdowns for smaller buffers. However, even larger buffers experience significant slowdowns when the copied file becomes larger.
 
+
+
 # Summary
 
 < make summary of all methods, sum everything with pro/cons table >
@@ -502,6 +504,10 @@ Comparing `copy_file_range` against buffered POSIX copy gives this graph:
 In this article I've left out filesystem-level copy unexplored. These are special types of copy operations that rely on filesystem-specific features.
 For instance, [btrfs](https://en.wikipedia.org/wiki/btrfs) has a copy-on-write feature. That means making a copy of a file is a trivial operation that doesn't even require reading the original file at all.
 Instead, the filesystem marks both files as holding the same content, and the copy will only be performed if you modify either of those file.
+
+
+It is also possible to create a kernel-level copy by using Linux's `io_uring` feature.
+However, since we already have `copy_file_range`, such a method may not yield any advantages over the ones already available.
 
 # Methodology
 
@@ -516,13 +522,25 @@ A later function checks that the copied file's content match that of the origina
 
 As it is not possible to control how SDDs cache data, all tests were run once before recording their data.
 
-To run individual benchmark, compile the `copy.c` file with the following flags:
+To run individual benchmark, compile the `copy.c` file in `src/` with the following flags:
 
 ``Plain Text,
-gcc copy.c -Wall -Wextra -Wconversion -O2 -DCOPY=<NAME> -o copy
+gcc copy.c -Wall -Wextra -Wconversion -O2 -DCOPY=<NAME> -DBUFFER_SIZE=<SIZE> -DSPLICE_CHUNK=<SIZE> -o copy
 ``
 
-*Where `<NAME>` is the copy method you want to benchmark*
+*Where `<NAME>` is the copy method you want to benchmark*:
+ - `posix` for 1-byte POSIX copy;
+ - `stdio` for 1-byte stdio copy;
+ - `stdio_lb` for 8192-bytes stdio copy (using `setvbuf`);
+ - `posix_buffered` for buffered POSIX copy (using specified `BUFFER_SIZE`);
+ - `posix_buffered_aligned` for buffered POSIX copy (using specified `BUFFER_SIZE`), buffer is allocated using `posix_memalign`;
+ - `buffered_stdio` for buffered stdio copy (using specified `BUFFER_SIZE`);
+ - `copy_file_range` for `copy_file_range`;
+ - `sendfile` for `sendfile`;
+ - `splice` for `splice` (using specified `SPLICE_CHUNK`);
+ - `splice_lb` for `splice` (using specified `SPLICE_CHUNK`), with a pre-allocated buffer using `fcntl(pipe[0], F_SETPIPE_SZ, SPLICE_CHUNK)`;
+ - `cp` for the `cp` utility from coreutils;
+ - `memcpy` for pure `memcpy` copy (needs to allocate buffers).
 
 You can then run the program:
 
@@ -533,13 +551,61 @@ You can then run the program:
 Where:
  * `<NUM>` is the number of tests you want to run;
  * `[avg]` is an optional flag to output the average time in microseconds.
- * `[box]` is an optional flag to output a box-diagram data for the run, in this format: `MIN, Q1, MED, Q3, MAX, AVG`.
+ * `[box]` is an optional flag to output a box-diagram data for the run, in this format: `MIN, Q1, MED, Q3, MAX, AVG` (in microseconds).
+ * When specifying NUM only, the program outputs all measurements (in microseconds).
 
-To automatically run multiple tests, you can use the `bench.sh` script.
-This script will run 10000 tests for every tested method/size combination.
-In the script, you have to define the sizes and copy methods you want to benchmark:
- * `sizes` is the list of sizes to use for benchmarking (passed to `dd`);
- * `methods` is the list of copy methods to use.
+## Data
 
-The script will output each run to it's own file inside `data/`.
-Each tested method can then be combined to a single CSV file, by running the `combine.sh` script.
+Every benchmark outputs data in the `data/` directory, in CSV format.
+The first row corresponds to the column's file size in human readable format.
+And each columns contains the measurements in microseconds.
+Except for `data/overhead` which only contains the measurements.
+
+## Automation
+
+All scripts are located in `scripts/`.
+
+**Bash scripts**:
+
+The scripts will output each run to it's own file inside `data/`.
+
+`bench.sh`: Benchmark copy methods.
+You need to specify the tested methods and file sizes inside the script:
+ * `methods`: The list of methods to test 
+ * `sizes`: An array containing the size of the file to copy (passed to `dd`) and the number of tests to perform
+Outputs in `data/`.
+
+`bench_buf.sh`: Benchmark copy methods that take a `BUFFER_SIZE` argument.
+You need to specify the tested methods, file sizes and buffer sizes inside the script:
+ * `methods`: The list of methods to test 
+ * `sizes`: An array containing the size of the file to copy (passed to `dd`) and the number of tests to perform
+ * `bufsizs`: The buffer sizes to test
+Outputs in `data/bufsiz/`.
+
+
+`bench_buf_10M.sh`: Benchmark copy methods that take a `BUFFER_SIZE` argument against a single 10MiB file.
+You need to specify the tested methods and buffer sizes inside the script:
+ * `methods`: The list of methods to test 
+ * `bufsizs`: The buffer sizes to test
+Outputs in `data/bufsiz_10M/`.
+
+`bench_buf_read.sh`: Benchmark read overhead for buffered POSIX copy.
+You need to specify the tested buffer sizes inside the script:
+ * `bufsizs`: The buffer sizes to test
+Outputs in `data/overhead/`.
+
+`bench_buf_write.sh`: Benchmark write overhead for buffered POSIX copy.
+You need to specify the tested buffer sizes inside the script:
+ * `bufsizs`: The buffer sizes to test
+Outputs in `data/overhead/`.
+
+**R scripts**:
+ - `plot.R`: Violin plot performing two regressions with a fixed cutoff. *Takes a **CSV** file and a **name** as input.*
+ - `plot_single.R`: Violin plot performing a single regression. *Takes a **CSV** file and a **name** as input.*
+ - `compare.R`: Compares two benchmarks and outputs a violin plot of $\frac{\mathtt{bench1}}{\mathtt{bench2}}$. *Takes two **CSV** files and two **names** as input.*
+ - `plot_bufsiz.R`: Plots buffer sizes for `data/bufsiz/` (used by buffered POSIX copy)
+ - `plot_bufsiz_10M.R`: Plots buffer sizes for `data/bufsiz_10M/` (used by buffered POSIX copy)
+ - `plot_read_oh.R`: Plots read overhead for buffered POSIX copy in `data/overhead/`.
+ - `plot_write_oh.R`: Plots write overhead for buffered POSIX copy in `data/overhead/`.
+ - `compareNhigh.R`: Compares N benchmarks against the first one (used when the first benchmark is slower). *Takes one **CSV**/**name** combination, then N **CSV**/**name** as input*
+ - `compareNlow.R`: Compares N benchmarks against the first one (used when the first benchmark is faster). *Takes one **CSV**/**name** combination, then N **CSV**/**name** as input*
