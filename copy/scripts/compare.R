@@ -5,7 +5,7 @@ suppressMessages(library(dplyr))
 suppressMessages(library(tidyr))
 
 args <- commandArgs(trailingOnly = TRUE)
-if(length(args) < 4) stop("Usage: Rscript compare_csv_violin_colored.R <csvA> <nameA> <csvB> <nameB>")
+if(length(args) < 4) stop("Usage: Rscript compare.R <csvA> <nameA> <csvB> <nameB>")
 
 csvA_path <- args[1]
 nameA <- args[2]
@@ -76,7 +76,14 @@ levels(long_df$Label) <- ci_df$Label
 
 # Create color palette
 n_bins <- length(col_levels)
-colors <- rainbow(n_bins, s = 0.7, v = 0.8)
+primary5 <- c(
+  "#1f77b4",  # Blue
+  "#2ca02c",  # Green
+  "#d62728",  # Red
+  "#9467bd",  # Purple
+  "#ff7f0e"   # Orange
+)
+colors <- rep(primary5, length.out = n_bins)
 names(colors) <- ci_df$Label
 
 # Plot
@@ -92,7 +99,7 @@ p <- ggplot(long_df, aes(x = Label, y = Speedup, fill = Label)) +
                 aes(x = Label, ymin = Lower, ymax = Upper),
                 width = 0.2, color = "black", inherit.aes = FALSE) +
   # Colors and legend
-  scale_fill_manual(values = colors, name = "Bin (mean ± 99.5% CI)", labels = ci_df$Label) +
+  scale_fill_manual(values = colors, name = "File size (mean ± 99.5% CI)", labels = ci_df$Label) +
   scale_y_log10() +
   labs(title = paste("Speedup of", nameA, "over", nameB),
        x = "Data Size (bytes)",

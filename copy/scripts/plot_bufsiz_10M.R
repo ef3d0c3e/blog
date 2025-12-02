@@ -65,7 +65,14 @@ ci_data <- combined_data %>%
 
 # Generate colors and accent colors for CI brackets
 n_sizes <- length(buffer_sizes)
-colors <- rainbow(n_sizes, s = 0.7, v = 0.8)
+primary5 <- c(
+  "#1f77b4",  # Blue
+  "#2ca02c",  # Green
+  "#d62728",  # Red
+  "#9467bd",  # Purple
+  "#ff7f0e"   # Orange
+)
+colors <- rep(primary5, length.out = n_sizes)
 names(colors) <- as.character(buffer_sizes)
 
 # Create brighter accent colors for CI brackets

@@ -43,7 +43,7 @@ The CPU has to perform extra work by fetching bytes from the memory instead of t
 
 #{posix_copy} POSIX copy
 
-I'll start by introducing the POSIX copy function. This function will use these 3 posix functions:
+I'll start by introducing the POSIX copy function. This function will use these 3 POSIX functions:
  - `open` to open a file;
  - `read` to read from an opened file;
  - `write` to write to an opened file.
@@ -316,7 +316,7 @@ Then the relationship becomes linear.
 What comes next, is naturally to test different buffer sizes and see how they affect the copying speed.
 Below is a benchmark of 20 different buffer sizes, to see how they affect the average copying speed:
 
-![buffered_posix_buffers](output://plot/buffer_size_all.svg)
+![buffered_posix_buffers](output://plot/buffer_size_all.svg) As the files become larger, we can clearly see the benefit of using larger buffers.
 
 As expected, when the buffer is greater then number of bytes to copy, it performs extremely well.
 However, when the file gets larger, the smaller buffer sizes are definitely slowing down the copy.
@@ -686,6 +686,7 @@ You need to specify the tested buffer sizes inside the script:
 Outputs in `data/overhead/`.
 
 **R scripts**:
+ - `plot_simple.R`: Violin plot. *Takes a **CSV** file and a **name** as input.*
  - `plot.R`: Violin plot performing two regressions with a fixed cutoff. *Takes a **CSV** file and a **name** as input.*
  - `plot_single.R`: Violin plot performing a single regression. *Takes a **CSV** file and a **name** as input.*
  - `compare.R`: Compares two benchmarks and outputs a violin plot of $\frac{\mathtt{bench1}}{\mathtt{bench2}}$. *Takes two **CSV** files and two **names** as input.*
