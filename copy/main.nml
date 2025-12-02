@@ -13,45 +13,47 @@
 
 # Introduction
 
-If you've ever done system programming in C, you might have noticed that the standard lacks a function to copy files.
-In fact, there's no single function like ``C, copyfile(const char *from, const char *to, int flags)``.
-At first, it looks like there's a hole in the standard library, since we can open, read and write to files, all within the boundaries of the C standard library.
-Using only these, it's possible to write our very own `copyfile` function, but is this really a good idea?
+If you've ever done system programming in C, you may have noticed that the standard doesn't include a function to copy files.
+There is no built-in function like ``C, copyfile(const char *from, const char *to, int flags)`` that copies a file in a single call.
+At first glance, this might feel like a gap in the standard library. Sure we can open, read and write to files using standard C functions.
+But there is no single function to copy a file.
+You could write your own `copyfile` function using just the standard library, but is that really the best approach?
 
-Such a broad question can simply be answered by 'No'.
-If you want the copied file to inherit the original file's permission, symlink status, owners etc.
-Then the C standard library doesn't give us the tools do to that.
-However if what you want is just a way to copy the 'content' of a regular file to another, then we have plenty of tools to work with.
-Especially when you consider POSIX and Linux, which give us tons of way to perform I/O operations on files.
+The short answer: no.
+If you want the copied file to preserve permissions, symlink status, ownership, and other metadata, the C standard library does not provide the necessary tools.
+However, if all you want is to copy the content of a regular file, then there are plenty of tools available.
+Especially on POSIX-compliant systems like Linux, there are many ways to perform file I/O efficiently.
 
-In this article, I'll explore 6 ways to copy files on Linux, and I'll discuss the pros and cons of each methods.
+In this article, I’ll walk you through six ways to copy files on Linux and highlight the pros and cons of each method.
 
-# Copy without I/O
+#{memcpy_copy} Copying Without I/O
 
-In this section, I'll measure the speed at which bytes can be copied on my system.
-This is a special benchmark that doesn't measure any I/O operations and is meant as a reference for how *fast* copying can be.
-`memcpy` should be regarded as the theoretical limit for copying speeds, thus every copy method presented in this article should be compared against it.
+In this section, I'm looking at how fast my system can copy bytes without performing any I/O operation.
+This benchmark ignores I/O and is meant to establish a maximum limit for the maximum copying speed.
+Think of `memcpy` as the theoretical limit: every copy method we discuss later can be compared against it.
 
-![memcpy_copy](output://plot/memcpy_copy.svg) Notice how the time for 256 bytes to 1024 bytes is almost constant. Then the relationship is roughly linear until 128kiB. \
-The sudden jump when we start copying more than 128kiB comes from buffer no longer fitting in the CPU caches. \
-`memcpy` then has to read and write data from main memory, which is significantly slower than the caches.
+![memcpy_copy](output://plot/memcpy_copy.svg) Notice that copying between 256 bytes and 1KiB takes almost the same time. \
+After that, the time grows roughly linearly until about 128 KiB. \
+The sudden jump beyond 128 KiB happens because the buffer no longer fits in the CPU caches. \
+At that point, `memcpy` has to move data to and from main memory, which is much slower than the caches.
 
-I won't go into all the details of how `memcpy` works, but it is highly optimized on modern systems.
-Internally `memcpy` will use unrolled loops and SIMD instructions to copy multiple bytes per instructions, maximizing throughput.
-For very large buffers, memory bandwidth and TLB misses start to dominate, which explains the observed increase in per-byte cost.
-The CPU has to perform extra work by fetching bytes from the memory instead of the cache, this is observable when the copied buffers exceed 128kiB.
+I won't dive into all the details of `memcpy`, but it's highly optimized on modern systems.
+Internally, it uses unrolled loops and SIMD instructions to copy multiple bytes per instruction, maximizing throughput.
+For very large buffers, memory bandwidth and TLB misses start to dominate, which explains the higher per-byte cost we observe.
+Essentially, when the buffer exceeds 128 KiB, the CPU has to fetch data from main memory instead of the cache, which slows things down.
 
-#{posix_copy} POSIX copy
+#{posix_copy} POSIX Copy
 
-I'll start by introducing the POSIX copy function. This function will use these 3 POSIX functions:
- - `open` to open a file;
- - `read` to read from an opened file;
- - `write` to write to an opened file.
+Let's begin with the most basic file-copying method available on POSIX systems: using the raw system calls `open`, `read`, and `write`.
 
-The simplest way to copy a file, is to first open it.
-This is done by calling `open` with the `O_RDONLY` flag, for reading.
-After that, we open the output file using the `O_WRONLY` flag, for writing. And use the `O_CREAT` flag, so it creates the file if it doesn't exist (or replace the existing file).
-Then we repeatedly call to `read`, to read one byte from the input file and `write`, to write that byte directly to the output file.
+ - `open` opens a file and returns a file descriptor;
+ - `read` reads raw bytes from a file descriptor;
+ - `write` writes raw bytes to a file descriptor.
+
+The simplest possible file copy uses these calls directly.
+First, we open the input file with `O_RDONLY` (for reading).
+Next, we open (or create) the output file with `O_WRONLY | O_CREAT`, this opens the file for writing, replacing any existing file.
+We then repeatedly call `read` to pull *one byte at a time* from the input file, and `write` to push that byte to the output file.
 
 ``C, POSIX copy
 void
@@ -74,14 +76,23 @@ copy_posix(const char* in, const char* out)
 }
 ``
 
-This function read and write 1 byte at a time. While it looks fairly straightforward, it's not exactly fast.
-In fact, if you try to run this function, you'll see that it's excruciatingly slow. On my setup, it took 29 seconds to copy a single 10MB file.
-It's not that my disk is slow, in fact it can reach upwards of 500MB/s of read+write speed. The issue comes from how we're copying the data.
-Actually, if I perform the same copy using the `cp` utility from coreutils, it now only takes 9 milliseconds.
-This is because every time we call `read` or `write`, the programs has to ask the kernel to perform some operations. This is know as a [Context Switch](https://en.wikipedia.org/wiki/Context_switch).
-Context switches are inherently slow operations. The kernel stops your process and perform the requested operations, only to later on restore your process.
-A round-trip context switch (which are typical for syscalls), take anywhere between 200 to 1000 nanoseconds. While that may seem low, we're doing 2 switches for every copied byte.
-On top of that, the kernel may decide to restore another process and wait longer before restoring our process.
+This function read and write 1 byte at a time. While it's fairly straightforward, it's not exactly fast.
+In fact, if you try to run this function, you'll see that it's excruciatingly slow.
+On my system, it took 29 seconds to copy a single 10MB file.
+It's not that my disk is slow, in fact it can reach upwards of 500MB/s of read+write speed.
+The issue comes from how we're copying the data.
+Actually, performing the same copy using the `cp` utility from GNU coreutils takes ~9 milliseconds only.
+
+Why the enormous difference? Each call to `read` or `write` triggers a **system call**, which means crossing the boundary between user mode and kernel mode. This triggers a *context switch*. A single round-trip syscall typically costs **200–1000 ns**, and this implementation performs **two** per byte. Worse, the kernel might decide to run another process before returning to ours.
+Why the enormous difference?
+Each call to `read` or `write` triggers a *system call*.
+This is know as a [Context Switch](https://en.wikipedia.org/wiki/Context_switch).
+Context switches are inherently slow operations: the kernel stops your process and perform the requested operations, only to later on restore your process.
+A round-trip context switch (which are typical for syscalls), typically costs 200 to 1000 nanoseconds.
+While that may seem like a small duration, we're doing 2 switches for every copied byte (one for `read` and one for `write`).
+
+To give rough figures, copying a single bytes takes around ~0.5ns, and every time we copy a single byte, we have to wait an additional 200-1000ns for the kernel to do it's job.
+On top of that, when we issue a context switch, the kernel may decide to restore another process and wait longer before restoring our process.
 
 Here's a simplified diagram of what happens when you call to `read()`:
 ``Plain Text
@@ -112,20 +123,29 @@ Here's a simplified diagram of what happens when you call to `read()`:
       │     100-500ns     │                           │
       │                   │                           │
 ``
+*`write()` has a similar diagram, expect we don't suffer from the disk's latency since the kernel usually flushes the writes later on, without making the program wait.*
 
-The underlying issue is that you're asking two different peice of hardware with very different clock speed to communicate sequentially.
-I found this table to illustrate my point: [Latency Numbers Every Programmer Should Know](https://gist.github.com/jboner/2841832).
+The fundamental issue is that we are trying to involve the disk, one of the slowest components of the system, to deliver *one byte at a time* to the CPU, one of the fastest.
+A widely-referenced chart illustrates why this mismatch is a problem: [Latency Numbers Every Programmer Should Know](https://gist.github.com/jboner/2841832).
 Your CPU performs billions of operations every seconds, when you ask it to read from the disk, it has to wait for a long time before being able to do anything else.
-That's why all modern kernels use *caching*. Instead of reading the requested single byte, it will read a bunch at once, often multiple thousands. Then it will store all those read bytes, while only returning you the single byte you asked for.
+That's why modern kernels perform aggressive *caching*.
+If the user requests a single byte, the kernel will typically read several *kilobytes* from disk into the page cache, then serve only the byte requested.
 
-Even the disk is physically incapable of reading one byte only. Disks operate on a block-basis, and you may not read less than one full block at a time.
+Even the disk is physically incapable of reading one byte only.
+Disks operate on a block-basis, and you may not read less than one full block at a time.
 You can check your disk's block size by doing this: `cat /sys/block/sdX/queue/physical_block_size` (usually 512 bytes).
+On top of that, filesystems usually impose their own *logical block size* on top of the disk's *physical block size*.
+This value can be checked in `/sys/block/sdX/queue/logical_block_size`, and it usually 4kiB for Ext4.
 
-For writing, it's even more sophisticated. Due to the Page Cache in the kernel, writing may not even write to the underlying file while your process lives.
-Instead the kernel may decide to schedule writing to the file later on, when the CPU becomes less busy. In the meantime, if another process wants to read from the file, then the kernel will simply return the cached version.
-This has a lot of implications, for instance, if your computer unexpectedly shuts down before the kernel can flush the writes, they may be definitely lost. That's why most database softwares avoid using the kernel's built-in cache. However, for most purposes, caching is fine and improves performance.
+Writes behave similarly.
+Thanks to the page cache, a `write` call usually does *not* write to disk immediately.
+Instead, the kernel buffers modifications and flushes them later when convenient.
+This improves performance dramatically, but can cause data loss on unexpected power-off—one reason databases often bypass the page cache entirely.
+However, in most use-cases, caching improves performances drastically, especially if multiple programs try to read the same file simultaneously.
 
-![copy_posix_box_plot](output://plot/posix_copy.svg) As you can see, it performs *very poorly*. If I added `cp` on the graph, it wouldn't even show up as it's much faster than this function. The cost of copying a single byte comes up to about ~1.3μs, which isn't particularly fast, not to say *very* slow.
+![copy_posix_box_plot](output://plot/posix_copy.svg) As expected, this naive POSIX implementation performs *terribly*. \
+If `cp` were added to the graph, it wouldn't be visible because it is order of magnitude  faster. \
+The per-byte cost of this naive approach is around ~1.3μs/byte, which isn't particularly fast, not to say *very* slow for copying.
 
 # Copy in 100\% standard C
 
@@ -418,7 +438,7 @@ In order to determine the values of $t_{syscall\;read}$ and $t_{syscall\;write}$
  * $t_{syscall\;write} = \mathtt{buffer\;size} \cdot f_{w} + c_{w}$, where $f_{w}$ and $c_{w}$ are constants.
 
 Constants $c$ should encapsulate the constant overhead of performing system calls.
-Constants $f$ should represent how much overhead is required for each read/written bytes.
+Constants $f$ should represent how much overhead is required for each read/written bytes (I/O time and time spent by the kernel copying bytes across buffers).
 
 To test out this hypothesis, I will run a micro benchmark measuring every read and write, then we'll see if a linear regression fits the data.
 In that case, the slope and intercept will give the $f$ and $c$ coefficients respectively.
@@ -492,6 +512,39 @@ That also means less cache pollution, CPU usage and memory bandwidth.
 Since now there's only one buffer containing the data, which should also improve the per-byte overhead.
 Furthermore the kernel is doing the heavy-lifting, therefore it can better adapt to the system's current conditions such as a busy filesystem, or I/O congestion.
 
+Here's a rough sketch of how kernel-copy might be work:
+``[max_lines=100] Plain Text
+┌───────────┐      ┌────────────┐
+│  Process  │      │   Kernel   │
+└───────────┘      └────────────┘
+      │   copy(A, B)     │
+      ├─────────────────>┤
+      │                  │  stat file A
+      │                  ├───────────────┐
+      │                  │               │
+      │                  ├<──────────────┘
+      │                  │ Allocate buffer to hold
+      │                  │  A, optimized for copy
+      │                  ├─────────────────────────┐
+      │                  │                         │
+      │                  ├<────────────────────────┘
+      │                  │
+      │                  ├<────────────────────────────┐
+      │                  │  Read A into buffer         │
+      │                  ├──────────────────────┐      │
+      │                  │                      │      │
+      │                  ├<─────────────────────┘      │
+      │                  │  Write buffer into B        │
+      │                  ├──────────────────────┐      │
+      │                  │                      │      │
+      │                  ├<─────────────────────┘      │
+      │                  │      Repeat until EOF       │
+      │                  ├─────────────────────────────┘
+      │      return      │
+      ├<─────────────────┤
+      ┊                  ┊
+``
+
 As a side note, `copy_file_range` works differently on some filesystems.
 On [Btrfs](https://en.wikipedia.org/wiki/btrfs) copy-on-write is supported, meaning that no data is ever copied.
 Instead the files are marked as holding the same content, which means the copy will be performed only once one of them is modified.
@@ -511,6 +564,8 @@ In practice, `copy_file_range` is the best suited for copying files, as the two 
 For instance, `sendfile` is generally used for serving files over a socket without having to copy it in userspace (requiring less memory and less CPU usage).
 While `splice` is useful for sharing data between pipes.
 
+With these kernel-level copy methods, we're getting performances close to the &{memcpy_copy}[`memcpy`-only method presented in the first section].
+
 Comparing `copy_file_range` against buffered POSIX copy gives this graph:
 ![speedup_copy_file_range](output://plot/speedup_copy_file_range.svg) Comparing all buffer sizes against `copy_file_range` shows significant slowdowns for smaller buffers. However, even larger buffers experience significant slowdowns when the copied file becomes larger.
 
@@ -519,13 +574,14 @@ However, these performances come at a cost: `copy_file_range` is unable to copy 
 According to the manual, trying to do so will result in `EXDEV`:
 ``Plain Text,
 EXDEV (before Linux 5.3)
-	  The files referred to by fd_in and fd_out are not on the same filesystem.
+	The files referred to by fd_in and fd_out are not on the same filesystem.
 
 EXDEV (since Linux 5.19)
-	  The  files  referred  to  by  fd_in and fd_out are not on the same filesystem, and the source and target
-	  filesystems are not of the same type, or do not support cross-filesystem copy.
+	The  files  referred  to  by  fd_in and fd_out are not on the same filesystem, and the source and target
+	filesystems are not of the same type, or do not support cross-filesystem copy.
 ``
 This is a fundamental limitation compared to simply using `read`+`write`.
+In practice, you can fall back to buffered POSIX copy when kernel-level copy isn't possible.
 
 When the conditions are good, `copy_file_range` should be the preferred method for copying files.
 
@@ -533,6 +589,12 @@ Also, since it requires a single call, error handling becomes simpler.
 Compared to repetitively calling `read` and `write`, where every call is a potential source of errors.
 
 # Summary and conclusion
+
+Here's a comparative graph showing all every copy method compares against `memcpy`:
+![speedup_vs_memcpy](output://plot/speedup_vs_memcpy.svg) Comparative graph of all copy methods, compared to `memcpy`. \
+Note sudden jump when the copied data reaches 256kiB. \
+This is due to the fact that memcpy becomes much slower per bytes at this point. \
+Overall, all kernel-copy methods outperforms the other methods, and get really close to `memcpy`'s performances for larger files.
 
 In this article, we explored multiple ways to copy files on Linux, each with its own trade-offs in terms of simplicity, performance, and system requirements.
 Here's a concise summary:
@@ -569,7 +631,7 @@ By understanding how each method interacts with the kernel, system calls, and ca
 
 # Going further
 
-In this article I've left out filesystem-level copy unexplored. These are special types of copy operations that rely on filesystem-specific features.
+In this article filesystem-level copy has been left unexplored. These are special types of copy operations that rely on filesystem-specific features.
 For instance, [btrfs](https://en.wikipedia.org/wiki/btrfs) has a copy-on-write feature.
 That means making a copy of a file is a trivial operation that doesn't even require reading the original file at all.
 Instead, the filesystem marks both files as holding the same content, and the copy will only be performed if you modify either of those file.
@@ -579,7 +641,7 @@ It is also possible to create a kernel-level copy by using Linux's `io_uring` fe
 However, since we already have `copy_file_range`, such a method may not yield any advantages over the kernel-level copy methods already available.
 As a side note, `copy_file_range` was added in Linux 4.5, while `io_uring` was added in Linux 5.1.
 And as of today `io_uring` is still tricky to work with and prone to errors.
-On top of that, since glibc 2.7, a retro-implementation (in user-space) of `copy_file_range` was created to support the call on older kernels or non-linux systems.
+On top of that, since glibc 2.27, a retro-implementation (in user-space) of `copy_file_range` was created to support the call on older kernels or non-linux systems.
 
 
 In this article I completely omitted metadata operations that tools like `cp` perform.
@@ -590,6 +652,15 @@ You also want to perform different handling if the file is a symbolic link, a pi
 I briefly mentioned `O_DIRECT` at the beginning of the article. When opening a file with this flag, it entirely bypasses the kernel's cache.
 This flag is not meant for general-purpose copy, but for situations where reliability and latency need to be tightly controlled, for instance in a database software.
 In fact `O_DIRECT` greatly reduces the speed of I/O operations.
+
+
+There's also the entire unexplored area of network filesystems or FUSE filesystems in general.
+They're very useful as they allow to mount another filesystem that isn't naturally part of your computer, for instance a FTP server, or a smartphone.
+However they introduce their own caveats as they are not managed by your kernel, therefore it's very hard to reliably transfer data across those links.
+For instance, the kernel can't guarantee atomicity, so multiple programs may write to the same file without evident coordination.
+Note that on a network filesystem, copying data using the naive stdio or POSIX buffered copy means the data is sent over the network twice:
+once to your computer and once from your computer back to the server.
+This is explained in glibc's [`copy_file_range` documentation](https://www.gnu.org/software/libc/manual/html_node/Copying-File-Data.html).
 
 # Methodology
 
@@ -696,3 +767,22 @@ Outputs in `data/overhead/`.
  - `plot_write_oh.R`: Plots write overhead for buffered POSIX copy in `data/overhead/`.
  - `compareNhigh.R`: Compares N benchmarks against the first one (used when the first benchmark is slower). *Takes one **CSV**/**name** combination, then N **CSV**/**name** as input*
  - `compareNlow.R`: Compares N benchmarks against the first one (used when the first benchmark is faster). *Takes one **CSV**/**name** combination, then N **CSV**/**name** as input*
+ - `compareSummary.R`: Compares N benchmarks against the first one (used for the summary graph only). *Takes one **CSV**/**name** combination, then N **CSV**/**name** as input*
+
+# References
+
+This article heavily references the Linux programmer's manual, commonly referred to as man:
+ - [open](https://man7.org/linux/man-pages/man2/open.2.html) The `open` system call
+ - [read](https://man7.org/linux/man-pages/man2/read.2.html) The `read` system call
+ - [write](https://man7.org/linux/man-pages/man2/write.2.html) The `write` system call
+ - [fopen](https://man7.org/linux/man-pages/man3/fopen.3.html) The `fopen` standard C function
+ - [fread](https://man7.org/linux/man-pages/man3/fread.3.html) The `fread` standard C function
+ - [fwrite](https://man7.org/linux/man-pages/man3/fwrite.3.html) The `fwrite` standard C function
+ - [sendfile](https://man7.org/linux/man-pages/man2/sendfile.2.html) The `sendfile` system call
+ - [splice](https://man7.org/linux/man-pages/man2/splice.2.html) The `splice` system call
+ - [copy_file_range](https://man7.org/linux/man-pages/man2/copy_file_range.2.html) The `copy_file_range` system call
+ - [How useful should copy_file_range() be?](https://lwn.net/Articles/846403/) A discussion about the history and usage of `copy_file_range`
+ - [io_uring](https://man7.org/linux/man-pages/man7/io_uring.7.html) The `io_uring` Linux facility
+ - [FUSE](https://www.kernel.org/doc/html/next/filesystems/fuse/fuse.html) The `FUSE` Linux facility
+ - [Latency Numbers Every Programmer Should Know](https://gist.github.com/jboner/2841832) Latency of different operations
+ - [Linux Page Cache](https://linuxvox.com/blog/linux-page-cache/) A LinuxVox article about the Linux Page Cache
