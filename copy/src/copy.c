@@ -336,6 +336,34 @@ copy_memcpy(const char *in, const char *out, struct timespec *start, struct time
 	free(buf_in);
 }
 
+/** Perform memcpy only, using aligned buffer */
+void
+copy_memcpy_aligned(const char *in, const char *out, struct timespec *start, struct timespec *end)
+{
+	(void)out;
+
+	int fd = open(in, O_RDONLY);
+	off_t size = lseek(fd, 0, SEEK_END);
+	lseek(fd, 0, SEEK_SET);
+	void *buf_in = NULL;
+	posix_memalign(&buf_in, 4096, (size_t)size);
+	size_t pos = 0;
+	while (1)
+	{
+		ssize_t r = read(fd, buf_in + pos, 8192);
+		if (r <= 0)
+			break;
+		pos += (size_t)r;
+	}
+	char *buf_out = malloc((size_t)size);
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, start);
+	memcpy(buf_in, buf_out, (size_t)size);
+	clock_gettime(CLOCK_MONOTONIC_RAW, end);
+	free(buf_out);
+	free(buf_in);
+}
+
 #define __CAT(x, y) x##y
 #define CAT(x, y) __CAT(x, y)
 #define COPY_FUN CAT(copy_, COPY)
@@ -374,21 +402,26 @@ main(int ac, char** av)
 		struct timespec start, end;
 #define cp 1
 #define memcpy 1
+#define memcpy_aligned 1
 #if COPY==1
 #undef cp
 #undef memcpy
+#undef memcpy_aligned
 		COPY_FUN(in, out, &start, &end);
 #else
 #undef cp
 #undef memcpy
+#undef memcpy_aligned
 		clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 		COPY_FUN(in, out);
 		clock_gettime(CLOCK_MONOTONIC_RAW, &end);
 #endif // COPY == 1
 #ifndef NOCHECK
 #define memcpy 1
+#define memcpy_aligned 1
 #if COPY==0
 #undef memcpy
+#undef memcpy_aligned
 		if (!validate(in, out)) {
 			fprintf(stderr, "Invalid copy\n");
 			free(distrib);
@@ -396,6 +429,7 @@ main(int ac, char** av)
 		}
 #endif // COPPY == 0
 #undef memcpy
+#undef memcpy_aligned
 		time_t sec = end.tv_sec - start.tv_sec;
 		long nsec = end.tv_nsec - start.tv_nsec;
 		if (nsec < 0) {

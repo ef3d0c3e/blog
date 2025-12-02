@@ -26,10 +26,11 @@ body {
 	overflow-x: auto;
 }
 
-.code-block div.code-block-title {
+.code-block figcaption.code-block-title {
 	background-color: #20202a;
 	padding-left: .3em;
 	margin: 0;
+	font-size: 1.2em;
 }
 
 .code-block pre code {
@@ -61,7 +62,7 @@ body {
 	user-select: none;
 }
 
-pre.inline-code {
+code.inline-code {
 	display: inline-block;
 	margin: 0;
 	padding: 0.2em 0.4em;

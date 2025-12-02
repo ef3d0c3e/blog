@@ -1,3 +1,4 @@
+
 #!/usr/bin/env Rscript
 
 # Load required libraries
@@ -71,48 +72,12 @@ stats_data <- data_long %>%
     .groups = "drop"
   )
 
-# Piecewise regression breakpoint
-breakpoint <- 4096
-data_long <- data_long %>%
-  mutate(region = ifelse(byte_size < breakpoint, "small", "large"))
-
-# Linear regressions in linear space (time ~ byte_size)
-lm_small <- lm(time ~ byte_size, data = data_long, subset = region == "small")
-lm_large <- lm(time ~ byte_size, data = data_long, subset = region == "large")
-
-# Extract regression statistics
-extract_stats <- function(lm_model) {
-  s <- summary(lm_model)
-  coef <- s$coefficients
-  slope <- coef[2,1]
-  intercept <- coef[1,1]
-  r_squared <- s$r.squared
-  p_value <- coef[2,4]
-  list(slope = slope, intercept = intercept, r_squared = r_squared, p_value = p_value)
-}
-
-stats_small <- extract_stats(lm_small)
-stats_large <- extract_stats(lm_large)
-
 # Compute regression lines in plotting coordinates (convert y to log2 for plotting)
 reg_line <- function(lm_model, x_range) {
   x_vals <- seq(x_range[1], x_range[2], length.out = 50)
   y_vals <- lm_model$coefficients[1] + lm_model$coefficients[2] * x_vals
   data.frame(byte_size = x_vals, log2_time = log2(y_vals))
 }
-
-# Compute regression lines in byte_size / time coordinates
-line_small <- data.frame(
-  byte_size = seq(min(data_long$byte_size[data_long$region=="small"]),
-                  max(data_long$byte_size[data_long$region=="small"]), length.out = 50)
-)
-line_small$time <- predict(lm_small, newdata = line_small)
-
-line_large <- data.frame(
-  byte_size = seq(min(data_long$byte_size[data_long$region=="large"]),
-                  max(data_long$byte_size[data_long$region=="large"]), length.out = 50)
-)
-line_large$time <- predict(lm_large, newdata = line_large)
 
 # Color palette
 n_sizes <- length(unique(data_long$size_name))
@@ -145,10 +110,6 @@ p1 <- ggplot(data_long, aes(x = log2_time, y = byte_size)) +
     aes(x = log2(q1 + (q3 - q1)/2), y = byte_size, color = size_name),
     shape = 21, fill = "white", size = 2, stroke = 0.5
   ) +
-  geom_line(data = line_small, aes(x = log2(time), y = byte_size),
-            color = "black", linetype = "dashed", size = 0.5) +
-  geom_line(data = line_large, aes(x = log2(time), y = byte_size),
-            color = "red", linetype = "dashed", size = 0.5) +
   scale_fill_manual(values = colors, name = "Size") +
   scale_color_manual(values = colors, name = "Size") +
   guides(fill = guide_legend(override.aes = list(shape = 21))) +
@@ -174,11 +135,6 @@ p1 <- ggplot(data_long, aes(x = log2_time, y = byte_size)) +
   ) +
   labs(
     title = paste("Benchmark:", plot_name),
-    subtitle = sprintf(
-      "Linear regression: Small (<4KB) slope=%.4f, R²=%.4f, p=%.2e | Large (≥4KB) slope=%.4f, R²=%.4f, p=%.2e",
-      stats_small$slope, stats_small$r_squared, stats_small$p_value,
-      stats_large$slope, stats_large$r_squared, stats_large$p_value
-    )
   )
 
 # Histogram by relative frequency

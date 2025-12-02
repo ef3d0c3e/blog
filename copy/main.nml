@@ -17,6 +17,7 @@ If you've ever done system programming in C, you might have noticed that the sta
 In fact, there's no single function like ``C, copyfile(const char *from, const char *to, int flags)``.
 At first, it looks like there's a hole in the standard library, since we can open, read and write to files, all within the boundaries of the C standard library.
 Using only these, it's possible to write our very own `copyfile` function, but is this really a good idea?
+
 Such a broad question can simply be answered by 'No'.
 If you want the copied file to inherit the original file's permission, symlink status, owners etc.
 Then the C standard library doesn't give us the tools do to that.
@@ -24,6 +25,21 @@ However if what you want is just a way to copy the 'content' of a regular file t
 Especially when you consider POSIX and Linux, which give us tons of way to perform I/O operations on files.
 
 In this article, I'll explore 6 ways to copy files on Linux, and I'll discuss the pros and cons of each methods.
+
+# Copy without I/O
+
+In this section, I'll measure the speed at which bytes can be copied on my system.
+This is a special benchmark that doesn't measure any I/O operations and is meant as a reference for how *fast* copying can be.
+`memcpy` should be regarded as the theoretical limit for copying speeds, thus every copy method presented in this article should be compared against it.
+
+![memcpy_copy](output://plot/memcpy_copy.svg) Notice how the time for 256 bytes to 1024 bytes is almost constant. Then the relationship is roughly linear until 128kiB. \
+The sudden jump when we start copying more than 128kiB comes from buffer no longer fitting in the CPU caches. \
+`memcpy` then has to read and write data from main memory, which is significantly slower than the caches.
+
+I won't go into all the details of how `memcpy` works, but it is highly optimized on modern systems.
+Internally `memcpy` will use unrolled loops and SIMD instructions to copy multiple bytes per instructions, maximizing throughput.
+For very large buffers, memory bandwidth and TLB misses start to dominate, which explains the observed increase in per-byte cost.
+The CPU has to perform extra work by fetching bytes from the memory instead of the cache, this is observable when the copied buffers exceed 128kiB.
 
 #{posix_copy} POSIX copy
 
@@ -411,19 +427,20 @@ In that case, the slope and intercept will give the $f$ and $c$ coefficients res
 ![buffered_posix_read_oh](output://plot/buffer_read_oh.svg) This is the overhead of each read calls for reading a 10MB file. \
 The timings are averaged on each run, 500 runs were performed for each buffer size. \
 Note how the distribution is multi-modal; this is because every time about 128kiB is read, the kernel pre-fetches the next 128kiB piece of data to be available for later reads. \
+The number of bytes the kernel pre-fetches can be tuned in `/sys/block/sdX/queue/read_ahead_kb` \
 This phenomenon is clearly visible in the 8192 buffer size, since every 8 reads, one read will takes significantly longer than the others. \
 Then the kernel decides to start fetching 256kiB at once, to speed things up even further. \
 This phenomenon is highlighted by the fact that for buffers above 128kiB, the lower distribution shifts up.
 
 The slope is roughly $2.50\,\mathtt{ns} / \mathtt{byte}$, meaning that every additional byte adds about $2.5\,ns$ of read time.
 The intercept, $1515\,ns$, is very large for a system call.
-But since the distribution is mostly multi-modal, that intercept should be interpreted with a grain of salt.
+But since the distribution is multi-modal, that intercept should be interpreted with a grain of salt.
 
 ![buffered_posix_write_oh](output://plot/buffer_write_oh.svg) This is the overhead of each write calls for reading a 10MB file. \
 The timings are averaged on each run, 500 runs were performed for each buffer size. \
 It looks like it's faster to write than to read a file. \
 The main reason is that kernel is buffering all writes. \
-If the kernel were actually syncing when we call write, we would see a multi-modal distribution, like what happened with `read`.
+If the kernel were actually syncing to disk when we call write, we would see a much slower distribution, like what happened with `read`.
 
 Due to the fact that the kernel is buffering all writes, what we see is a pure system-call scenario, without I/O.
 This confirms that for every system call, there will be a $103\,ns$ overhead (round trip), then it takes $0.58\,ns$ per bytes copied.
@@ -553,12 +570,26 @@ By understanding how each method interacts with the kernel, system calls, and ca
 # Going further
 
 In this article I've left out filesystem-level copy unexplored. These are special types of copy operations that rely on filesystem-specific features.
-For instance, [btrfs](https://en.wikipedia.org/wiki/btrfs) has a copy-on-write feature. That means making a copy of a file is a trivial operation that doesn't even require reading the original file at all.
+For instance, [btrfs](https://en.wikipedia.org/wiki/btrfs) has a copy-on-write feature.
+That means making a copy of a file is a trivial operation that doesn't even require reading the original file at all.
 Instead, the filesystem marks both files as holding the same content, and the copy will only be performed if you modify either of those file.
 
 
 It is also possible to create a kernel-level copy by using Linux's `io_uring` feature.
 However, since we already have `copy_file_range`, such a method may not yield any advantages over the kernel-level copy methods already available.
+As a side note, `copy_file_range` was added in Linux 4.5, while `io_uring` was added in Linux 5.1.
+And as of today `io_uring` is still tricky to work with and prone to errors.
+On top of that, since glibc 2.7, a retro-implementation (in user-space) of `copy_file_range` was created to support the call on older kernels or non-linux systems.
+
+
+In this article I completely omitted metadata operations that tools like `cp` perform.
+When you copy a file, you're usually copying its owner/group/permissions combination as well as its content.
+You also want to perform different handling if the file is a symbolic link, a pipe or a socket, which this article doesn't take into consideration.
+
+
+I briefly mentioned `O_DIRECT` at the beginning of the article. When opening a file with this flag, it entirely bypasses the kernel's cache.
+This flag is not meant for general-purpose copy, but for situations where reliability and latency need to be tightly controlled, for instance in a database software.
+In fact `O_DIRECT` greatly reduces the speed of I/O operations.
 
 # Methodology
 
@@ -570,7 +601,10 @@ A later function checks that the copied file's content match that of the origina
  * CPU: AMD Ryzen 5 3600X
  * Drive: WDC WDS500G1R0B
  * Filesystem: Ext4 behind LVM+Luks2
+ * GCC version: 15.2.0
+ * glibc version: 2.41-12 
 
+Every time a function from the C standard is mentioned, expect it to come from glibc.
 As it is not possible to control how SDDs cache data, all tests were run once before recording their data.
 
 To run individual benchmark, compile the `copy.c` file in `src/` with the following flags:
@@ -591,7 +625,8 @@ gcc copy.c -Wall -Wextra -Wconversion -O2 -DCOPY=<NAME> -DBUFFER_SIZE=<SIZE> -DS
  - `splice` for `splice` (using specified `SPLICE_CHUNK`);
  - `splice_lb` for `splice` (using specified `SPLICE_CHUNK`), with a pre-allocated buffer using `fcntl(pipe[0], F_SETPIPE_SZ, SPLICE_CHUNK)`;
  - `cp` for the `cp` utility from coreutils;
- - `memcpy` for pure `memcpy` copy (needs to allocate buffers).
+ - `memcpy` for pure `memcpy` copy without I/O.
+ - `memcpy_aligned` for pure `memcpy` copy without I/O using a buffer allocated by `posix_memalign`.
 
 You can then run the program:
 
@@ -603,7 +638,7 @@ Where:
  * `<NUM>` is the number of tests you want to run;
  * `[avg]` is an optional flag to output the average time in microseconds.
  * `[box]` is an optional flag to output a box-diagram data for the run, in this format: `MIN, Q1, MED, Q3, MAX, AVG` (in microseconds).
- * When specifying NUM only, the program outputs all measurements (in microseconds).
+ * When specifying `NUM` only, the program outputs all measurements (in microseconds).
 
 ## Data
 
