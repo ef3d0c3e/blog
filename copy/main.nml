@@ -466,12 +466,14 @@ In this section, I'll write about these 3 specific linux system calls.
 `splice` is like `sendfile` except it operates on pipes.
 While `copy_file_range` copies files, letting you specify offsets and sizes.
 
-The main particularity of these system calls is that they perform copying entirely in kernel mode.
+The main particularity of these system calls is that they perform copying entirely in kernel mode, also referred to as *zero-copy*.
 There are no buffers you have to manage, no read/write separation, everything is handled by these calls.
 
 The main benefit of using these is that the kernel doesn't have to give you a buffer from reading, that you then send back to the kernel for writing.
 That's an added benefit since you also don't have to allocate any additional memory to store your buffers.
-That also means less cache pollution, since now there's only one buffer containing the data, which should also improve the per-byte overhead.
+That also means less cache pollution, CPU usage and memory bandwidth.
+Since now there's only one buffer containing the data, which should also improve the per-byte overhead.
+Furthermore the kernel is doing the heavy-lifting, therefore it can better adapt to the system's current conditions such as a busy filesystem, or I/O congestion.
 
 As a side note, `copy_file_range` works differently on some filesystems.
 On [Btrfs](https://en.wikipedia.org/wiki/btrfs) copy-on-write is supported, meaning that no data is ever copied.
@@ -486,18 +488,67 @@ So here are the results for these 3 system calls:
 The first thing that we notice is that they all seem to have similar performances. In fact the regressions (for larger files) all have the same slope of $0.3\, \mathtt{ns}/\mathtt{byte}$.
 In order to better compare them, below is a comparative plot of the three methods:
 
-![speedup_kernel_copy](output://plot/speedup_kernel_copy.svg) `splice` was used as the baseline because it's the slowest of the threes. `sendfile` and `copy_file_range` seem to have the exact same performances, while being slightly faster than `splice`. However, they eventually match `splice` performances for larger buffers.
+![speedup_kernel_copy](output://plot/speedup_kernel_copy.svg) `splice` was used as the baseline because it's the slowest of the three. `sendfile` and `copy_file_range` seem to have the exact same performances, while being slightly faster than `splice`. However, they eventually match `splice` performances for larger buffers.
 
-In practice, `copy_file_range` is the most adapted for copying files, as the two others are generally used for other purposes.
+In practice, `copy_file_range` is the best suited for copying files, as the two others are generally used for other purposes.
+For instance, `sendfile` is generally used for serving files over a socket without having to copy it in userspace (requiring less memory and less CPU usage).
+While `splice` is useful for sharing data between pipes.
 
 Comparing `copy_file_range` against buffered POSIX copy gives this graph:
-![speedup_copy_file_range](output://plot/speedup_copy_file_range.svg) All buffer sizes were compared against `copy_file_range`, yielding significant slowdowns for smaller buffers. However, even larger buffers experience significant slowdowns when the copied file becomes larger.
+![speedup_copy_file_range](output://plot/speedup_copy_file_range.svg) Comparing all buffer sizes against `copy_file_range` shows significant slowdowns for smaller buffers. However, even larger buffers experience significant slowdowns when the copied file becomes larger.
 
+Overall `copy_file_range` is faster than all other methods previously discussed in this article.
+However, these performances come at a cost: `copy_file_range` is unable to copy files across filesystems.
+According to the manual, trying to do so will result in `EXDEV`:
+``Plain Text,
+EXDEV (before Linux 5.3)
+	  The files referred to by fd_in and fd_out are not on the same filesystem.
 
+EXDEV (since Linux 5.19)
+	  The  files  referred  to  by  fd_in and fd_out are not on the same filesystem, and the source and target
+	  filesystems are not of the same type, or do not support cross-filesystem copy.
+``
+This is a fundamental limitation compared to simply using `read`+`write`.
 
-# Summary
+When the conditions are good, `copy_file_range` should be the preferred method for copying files.
 
-< make summary of all methods, sum everything with pro/cons table >
+Also, since it requires a single call, error handling becomes simpler. 
+Compared to repetitively calling `read` and `write`, where every call is a potential source of errors.
+
+# Summary and conclusion
+
+In this article, we explored multiple ways to copy files on Linux, each with its own trade-offs in terms of simplicity, performance, and system requirements.
+Here's a concise summary:
+ - POSIX copy (1-byte `read`/`write`):
+ -* Extremely simple and portable across POSIX systems.
+ -* Performs very poorly due to the high number of system calls and context switches.
+ -* Useful only for educational purposes or very small files.
+ - Standard C library copy (`fread`/`fwrite`):
+ -* Adds buffering on top of POSIX calls, improving performance significantly.
+ -* The buffering strategy is implementation-defined, and small buffers may still incur overhead.
+ -* Generally faster than raw POSIX copy for most files, but still far from optimal for large files.
+ -* Very portable due to the high availability of the C standard library
+ - Buffered POSIX copy (custom buffer):
+ -* Reading and writing in larger chunks dramatically reduces syscall overhead.
+ -* Allows fine-grained control over buffer size to balance memory usage, CPU cache, and system call overhead.
+ -* Properly tuned buffers can yield performance close to `cp` for files of typical sizes.
+ -* Still uses userspace memory and involves copying data between kernel and userspace.
+ - Kernel-assisted copy (`sendfile`, `splice`, `copy_file_range`):
+ -* Performs the copy entirely in kernel space, avoiding userspace memory overhead.
+ -* Minimizes CPU usage, cache pollution, and memory bandwidth.
+ -* `copy_file_range` is best suited for file-to-file copying, while sendfile and splice are better for network or pipe operations.
+ -* Extremely fast, often outperforming buffered userspace copies, but limited by filesystem boundaries (cannot copy across filesystems with `copy_file_range`).
+
+For most applications, buffered POSIX or standard C copy is sufficient, especially if you need portability or fine control over buffering.
+However, for maximum performance on Linux, leveraging kernel-assisted zero-copy methods like `copy_file_range` is the clear winner.
+They reduce CPU load, memory overhead, and achieve throughput close to the theoretical limits of the underlying storage.
+
+Ultimately, the *best* method depends on your constraints:
+ * Need portability: standard C / POSIX buffered copy.
+ * Need performance on Linux: `copy_file_range` (with fallback to buffered copy for cross-filesystem support).
+ * Need network/pipe efficiency: `sendfile` or `splice`.
+
+By understanding how each method interacts with the kernel, system calls, and caching, you can make informed decisions when designing high-performance file-copy routines in Linux.
 
 # Going further
 
@@ -507,7 +558,7 @@ Instead, the filesystem marks both files as holding the same content, and the co
 
 
 It is also possible to create a kernel-level copy by using Linux's `io_uring` feature.
-However, since we already have `copy_file_range`, such a method may not yield any advantages over the ones already available.
+However, since we already have `copy_file_range`, such a method may not yield any advantages over the kernel-level copy methods already available.
 
 # Methodology
 
