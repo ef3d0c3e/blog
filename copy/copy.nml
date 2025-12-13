@@ -32,7 +32,7 @@ In this section, I'm looking at how fast my system can copy bytes without perfor
 This benchmark ignores I/O and is meant to establish a maximum limit for the maximum copying speed.
 Think of `memcpy` as the theoretical limit: every copy method we discuss later can be compared against it.
 
-![memcpy_copy](output://plot/memcpy_copy.svg) Notice that copying between 256 bytes and 1KiB takes almost the same time. \
+![memcpy_copy](output://copy/memcpy_copy.svg) Notice that copying between 256 bytes and 1KiB takes almost the same time. \
 After that, the time grows roughly linearly until about 128 KiB. \
 The sudden jump beyond 128 KiB happens because the buffer no longer fits in the CPU caches. \
 At that point, `memcpy` has to move data to and from main memory, which is much slower than the caches.
@@ -143,7 +143,7 @@ Instead, the kernel buffers modifications and flushes them later when convenient
 This improves performance dramatically, but can cause data loss on unexpected power-off—one reason databases often bypass the page cache entirely.
 However, in most use-cases, caching improves performances drastically, especially if multiple programs try to read the same file simultaneously.
 
-![copy_posix_box_plot](output://plot/posix_copy.svg) As expected, this naive POSIX implementation performs *terribly*. \
+![copy_posix_box_plot](output://copy/posix_copy.svg) As expected, this naive POSIX implementation performs *terribly*. \
 If `cp` were added to the graph, it wouldn't be visible because it is order of magnitude  faster. \
 The per-byte cost of this naive approach is around ~1.3μs/byte, which isn't particularly fast, not to say *very* slow for copying.
 
@@ -219,7 +219,7 @@ Under the hood, most implementations will attempt to efficiently manage their in
 In practice, libc's buffering is not meant to squeeze performance, but to make the experience less painful.
 For instance, when writing to stdout or stderr, libc will flush every time a `\\n` is encountered.
 
-![copy_stdio_box_plot](output://plot/stdio_copy.svg) The graph is similar to POSIX copy, but it's still far from matching `cp`'s performance.
+![copy_stdio_box_plot](output://copy/stdio_copy.svg) The graph is similar to POSIX copy, but it's still far from matching `cp`'s performance.
 
 If you pay attention to details, you may have noticed that the time is roughly the same for all sizes under 1kB.
 When I run the program under `strace`:
@@ -263,19 +263,19 @@ These buffers usually allocate at least one memory page, which corresponds to th
 So it would look like `glibc` is doing a great job at buffering.
 
 To test that hypothesis, I computed a speedup comparison of stdio vs POSIX copying:
-![posix_stdio_speedup](output://plot/speedup_stdio_vs_posix.svg) Even for smaller file sizes, it outperforms POSIX copy. For larger sizes it blows it out of the competition.
+![posix_stdio_speedup](output://copy/speedup_stdio_vs_posix.svg) Even for smaller file sizes, it outperforms POSIX copy. For larger sizes it blows it out of the competition.
 
 As you can see, using stdio really did improve copying speed. Once the file size exceeds 4KiB, the copy is about **60x** faster. That's a huge improvement, but we're still lagging far behind the simple `cp` utility.
 However, stdio is not always your friend.
 I ran the same benchmarks as before, this time using sizes close to the page boundary. The results speak for themselves:
 
-![page_stdio_copy](output://plot/page_stdio_copy.svg)
+![page_stdio_copy](output://copy/page_stdio_copy.svg)
 
 There seems to be a significant overhead for 4096 byes, which is odd since this is the page boundary. Meaning that the same number of syscalls should be made than for copying 4095 bytes.
 What gets really strange, is the fact that it's slower than copying 4097 bytes. Looking at `strace`, 4097 bytes does cause additional system calls, since stdio will now have to read two pages.
 This is a hint, that what is slowing us down is not system calls, but stdio itself. To be sure of that, I set stdio's buffer size to 8kiB:
 
-![page_stdio_copy](output://plot/page_stdio_lb_copy.svg) Using `setvbuf` we're able to set the buffer's size for stdio. Note that the time includes the overhead caused by calling `setvbuf`.
+![page_stdio_copy](output://copy/page_stdio_lb_copy.svg) Using `setvbuf` we're able to set the buffer's size for stdio. Note that the time includes the overhead caused by calling `setvbuf`.
 
 This tells us that stdio is the culprit, but this change only moved the problem further down the line.
 Performing copies of about 8192 bytes will highlight the same issues as before.
@@ -330,13 +330,13 @@ In theory, since our previous POSIX copy was being slowed down by the high numbe
 If the bottleneck really was the number of system calls, this one should be much faster since we've reduced the number of system calls by about 8192.
 
 And here are the results:
-![buffered_posix](output://plot/posix_buffered_copy.svg) For sizes up to 4096, the time stays roughly the same, which is expected since they all finish within one call to `read` + `write`. \
+![buffered_posix](output://copy/posix_buffered_copy.svg) For sizes up to 4096, the time stays roughly the same, which is expected since they all finish within one call to `read` + `write`. \
 Then the relationship becomes linear.
 
 What comes next, is naturally to test different buffer sizes and see how they affect the copying speed.
 Below is a benchmark of 20 different buffer sizes, to see how they affect the average copying speed:
 
-![buffered_posix_buffers](output://plot/buffer_size_all.svg) As the files become larger, we can clearly see the benefit of using larger buffers.
+![buffered_posix_buffers](output://copy/buffer_size_all.svg) As the files become larger, we can clearly see the benefit of using larger buffers.
 
 As expected, when the buffer is greater then number of bytes to copy, it performs extremely well.
 However, when the file gets larger, the smaller buffer sizes are definitely slowing down the copy.
@@ -417,7 +417,7 @@ The kernel doesn't just split requests for fairness. The main reason is that I/O
 As stated earlier, since we want to do as little I/O operations as possible (those are slow), we batch multiple requests in order to issue a single read.
 
 For really large buffers, we start to see these diminishing returns:
-![buffered_posix_buffers_10M](output://plot/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes 
+![buffered_posix_buffers_10M](output://copy/buffer_size_all_10M.svg) Copying a 10MiB file using different buffer sizes 
 
 Checking with cachegrid, we can see that cache misses start appearing for buffers over 64kiB.\
 Even though misses are small, they may evict other relevant data from caches, which can lead to a slowdown further down the line.
@@ -444,7 +444,7 @@ To test out this hypothesis, I will run a micro benchmark measuring every read a
 In that case, the slope and intercept will give the $f$ and $c$ coefficients respectively.
 
 
-![buffered_posix_read_oh](output://plot/buffer_read_oh.svg) This is the overhead of each read calls for reading a 10MB file. \
+![buffered_posix_read_oh](output://copy/buffer_read_oh.svg) This is the overhead of each read calls for reading a 10MB file. \
 The timings are averaged on each run, 500 runs were performed for each buffer size. \
 Note how the distribution is multi-modal; this is because every time about 128kiB is read, the kernel pre-fetches the next 128kiB piece of data to be available for later reads. \
 The number of bytes the kernel pre-fetches can be tuned in `/sys/block/sdX/queue/read_ahead_kb` \
@@ -456,7 +456,7 @@ The slope is roughly $2.50\,\mathtt{ns} / \mathtt{byte}$, meaning that every add
 The intercept, $1515\,ns$, is very large for a system call.
 But since the distribution is multi-modal, that intercept should be interpreted with a grain of salt.
 
-![buffered_posix_write_oh](output://plot/buffer_write_oh.svg) This is the overhead of each write calls for reading a 10MB file. \
+![buffered_posix_write_oh](output://copy/buffer_write_oh.svg) This is the overhead of each write calls for reading a 10MB file. \
 The timings are averaged on each run, 500 runs were performed for each buffer size. \
 It looks like it's faster to write than to read a file. \
 The main reason is that kernel is buffering all writes. \
@@ -512,7 +512,7 @@ That also means less cache pollution, CPU usage and memory bandwidth.
 Since now there's only one buffer containing the data, which should also improve the per-byte overhead.
 Furthermore the kernel is doing the heavy-lifting, therefore it can better adapt to the system's current conditions such as a busy filesystem, or I/O congestion.
 
-Here's a rough sketch of how kernel-copy might be work:
+Here's a rough sketch of how kernel-copy might work:
 ``[max_lines=100] Plain Text
 ┌───────────┐      ┌────────────┐
 │  Process  │      │   Kernel   │
@@ -551,14 +551,14 @@ Instead the files are marked as holding the same content, which means the copy w
 However that's not the case on Ext4, meaning the kernel is actually copying bytes.
 
 So here are the results for these 3 system calls:
-![copy_sendfile](output://plot/sendfile_copy.svg) Benchmark for `sendfile`
-![copy_splice](output://plot/splice_copy.svg) Benchmark for `splice`. A size of 1MiB was used for splice.
-![copy_copy_file_range](output://plot/copy_file_range_copy.svg) Benchmark for `copy_file_range`
+![copy_sendfile](output://copy/sendfile_copy.svg) Benchmark for `sendfile`
+![copy_splice](output://copy/splice_copy.svg) Benchmark for `splice`. A size of 1MiB was used for splice.
+![copy_copy_file_range](output://copy/copy_file_range_copy.svg) Benchmark for `copy_file_range`
 
 The first thing that we notice is that they all seem to have similar performances. In fact the regressions (for larger files) all have the same slope of $0.3\, \mathtt{ns}/\mathtt{byte}$.
 In order to better compare them, below is a comparative plot of the three methods:
 
-![speedup_kernel_copy](output://plot/speedup_kernel_copy.svg) `splice` was used as the baseline because it's the slowest of the three. `sendfile` and `copy_file_range` seem to have the exact same performances, while being slightly faster than `splice`. However, they eventually match `splice` performances for larger buffers.
+![speedup_kernel_copy](output://copy/speedup_kernel_copy.svg) `splice` was used as the baseline because it's the slowest of the three. `sendfile` and `copy_file_range` seem to have the exact same performances, while being slightly faster than `splice`. However, they eventually match `splice` performances for larger buffers.
 
 In practice, `copy_file_range` is the best suited for copying files, as the two others are generally used for other purposes.
 For instance, `sendfile` is generally used for serving files over a socket without having to copy it in userspace (requiring less memory and less CPU usage).
@@ -567,7 +567,7 @@ While `splice` is useful for sharing data between pipes.
 With these kernel-level copy methods, we're getting performances close to the &{memcpy_copy}[`memcpy`-only method presented in the first section].
 
 Comparing `copy_file_range` against buffered POSIX copy gives this graph:
-![speedup_copy_file_range](output://plot/speedup_copy_file_range.svg) Comparing all buffer sizes against `copy_file_range` shows significant slowdowns for smaller buffers. However, even larger buffers experience significant slowdowns when the copied file becomes larger.
+![speedup_copy_file_range](output://copy/speedup_copy_file_range.svg) Comparing all buffer sizes against `copy_file_range` shows significant slowdowns for smaller buffers. However, even larger buffers experience significant slowdowns when the copied file becomes larger.
 
 Overall `copy_file_range` is faster than all other methods previously discussed in this article.
 However, these performances come at a cost: `copy_file_range` is unable to copy files across filesystems.
@@ -591,7 +591,7 @@ Compared to repetitively calling `read` and `write`, where every call is a poten
 # Summary and conclusion
 
 Here's a comparative graph showing all every copy method compares against `memcpy`:
-![speedup_vs_memcpy](output://plot/speedup_vs_memcpy.svg) Comparative graph of all copy methods, compared to `memcpy`. \
+![speedup_vs_memcpy](output://copy/speedup_vs_memcpy.svg) Comparative graph of all copy methods, compared to `memcpy`. \
 Note sudden jump when the copied data reaches 256kiB. \
 This is due to the fact that memcpy becomes much slower per bytes at this point. \
 Overall, all kernel-copy methods outperforms the other methods, and get really close to `memcpy`'s performances for larger files.
