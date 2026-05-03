@@ -81,7 +81,7 @@ function output_toc(title)
 			nml.unit():add_content(nml.raw.RawBlock("</ul>"))
 			depth = depth - 1
 		end
-		nml.unit():add_content(nml.raw.RawInline("<li><a href=\"#\">"))
+		nml.unit():add_content(nml.raw.RawInline("<li>"))
 		local first = true
 		local sc = nml.scope.Scope(h.content)
 
@@ -94,7 +94,7 @@ function output_toc(title)
 		sc:insert(0, nml.text.Text(number .. " "))
 
 		nml.unit():add_content(nml.internal_link.InternalLink(h.ref.refname, sc))
-		nml.unit():add_content(nml.raw.RawInline("</a></li>"))
+		nml.unit():add_content(nml.raw.RawInline("</li>"))
 	end
 	while depth > 0 do
 		nml.unit():add_content(nml.raw.RawBlock("</ul>"))
