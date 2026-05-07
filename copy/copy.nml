@@ -10,6 +10,8 @@
 \usepackage[T1]{fontenc}
 """
 :set latex.main.block_prepend = "\color{__color1}"
+:export html.title = "Copying disk bytes in C"
+@import_lazy "nav.nml"
 
 :lua
 local toc_heading_stack = {}
@@ -105,7 +107,7 @@ end
 EOF
 
 {<inline <header><span class="title"> >}
-Copying disk bytes in C
+%html.title%
 {<inline </span></header> >}
 
 {:lua_post output_toc("Table of Content"):}
