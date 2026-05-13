@@ -1,0 +1,44 @@
+:set nml.meta = true
+
+:: Navigation sidebar
+:lua
+local unit = nml.unit()
+
+local units = {}
+local res = nml.query.units()
+for k, v in ipairs(res) do
+	if not v.output_file then goto continue end
+	local title = nml.query.variable(v.reference_key, "html.title")
+	if not title then goto continue end
+
+	units[#units + 1] = {
+		reference_key = v.reference_key,
+		output_file = v.output_file,
+		title = title,
+	}
+	::continue::
+end
+
+unit:add_content(nml.raw.RawBlock("<aside class=\"sidebar-shell\">"))
+unit:add_content(nml.raw.RawBlock("<details class=\"sidebar\">"))
+unit:add_content(nml.raw.RawBlock("<summary>"))
+unit:add_content(nml.raw.RawBlock("<span class=\"sidebar-icon\" aria-hidden=\"true\">☰</span>"))
+unit:add_content(nml.raw.RawBlock("<span>Navigation</span>"))
+unit:add_content(nml.raw.RawBlock("</summary>"))
+
+local current_output = unit:get_variable("nml.output_file")
+if current_output then
+	current_output = current_output:to_string()
+end
+unit:add_content(nml.raw.RawBlock("<nav class=\"sidebar-nav\"><ul>"))
+for _i, ref in ipairs(units) do
+	if current_output == ref.output_file then
+		unit:add_content(nml.raw.RawBlock("<li><a href=\"#\" aria-current=\"page\">"))
+	else
+		unit:add_content(nml.raw.RawBlock("<li><a href=\"" .. ref.output_file ..  "\">"))
+	end
+	unit:add_content(nml.text.Text(ref.title))
+	unit:add_content(nml.raw.RawBlock("</a></li>"))
+end
+unit:add_content(nml.raw.RawBlock("</ul></nav></details></aside>"))
+EOF

@@ -1,0 +1,110 @@
+:set nml.meta = true
+:set latex.main.fontsize = 9
+:set latex.main.preamble = """
+\usepackage{xcolor, tikz, pgfplots}
+\usepgfplotslibrary{patchplots}
+\definecolor{__color1}{HTML}{d5d5d5}
+\everymath{\color{__color1}\displaystyle}
+\pgfplotsset{compat=1.18}
+\usepackage{cmbright}
+\SetSymbolFont{largesymbols}{normal}{OMX}{iwona}{m}{n}
+\usepackage[T1]{fontenc}
+"""
+:set latex.main.block_prepend = "\color{__color1}"
+
+:: Navigation
+@import_lazy "nav.nml"
+
+:: Table of content
+:lua
+local toc_heading_stack = {}
+local toc_id = 1
+local toc_headings = {}
+function table_of_content(display_fn)
+	nml.create_autocommand("CreateElem", function(ud)
+		if ud:name() == "Heading" then
+			local h = ud:downcast()
+
+			if h.reference:is_some() == false then
+				h.reference:set({ ["Internal"] = "heading-"..toc_id })
+				toc_id = toc_id + 1
+			end
+			if h.depth == #toc_heading_stack then
+			else
+				while h.depth > #toc_heading_stack do
+					table.insert(toc_heading_stack, 0)
+				end
+				while h.depth < #toc_heading_stack do
+					table.remove(toc_heading_stack)
+				end
+			end
+			toc_heading_stack[#toc_heading_stack] = toc_heading_stack[#toc_heading_stack] + 1
+			
+			-- Copy original content
+			local content = {}
+			for scope, elem in h.display:scope(0):content(true) do
+				content[#content + 1] = elem
+			end
+
+			-- Build display
+			display_fn(h.display:scope(0), toc_heading_stack, h.reference:get())
+
+			table.insert(toc_headings, { ref = h.reference:get(), depth = h.depth, content = content, stack = {table.unpack(toc_heading_stack)}})
+			return true
+		end
+		return true
+	end)
+end
+
+table_of_content(function(heading_display, stack, reference)
+	local text = ""
+	for i, v in ipairs(stack) do
+		--text = i == 1 and (text .. v) or (text .. "." .. v)
+		text = text .. "#"
+	end
+
+	local sc = nml.scope.Scope({
+		nml.raw.RawInline("<span class=\"heading-display\">"),
+		nml.text.Text(text),
+		nml.raw.RawInline("</span>")
+	})
+	heading_display:insert(0, nml.internal_link.InternalLink(reference.refname, sc))
+end)
+
+function output_toc(title)
+	local depth = 0
+	nml.unit():add_content(nml.raw.RawBlock("<div class=\"toc\">"))
+	nml.unit():add_content(nml.raw.RawInline("<span class=\"toc-title\">"))
+	nml.unit():add_content(nml.text.Text(title))
+	nml.unit():add_content(nml.raw.RawInline("</span>"))
+	for i, h in ipairs(toc_headings) do
+		while h.depth > depth do
+			nml.unit():add_content(nml.raw.RawBlock("<ul>"))
+			depth = depth + 1
+		end
+		while h.depth < depth do
+			nml.unit():add_content(nml.raw.RawBlock("</ul>"))
+			depth = depth - 1
+		end
+		nml.unit():add_content(nml.raw.RawInline("<li>"))
+		local first = true
+		local sc = nml.scope.Scope(h.content)
+
+		-- ID
+		local number = ""
+		print(tostring(h.stack))
+		for i, v in ipairs(h.stack) do
+			number = i == 1 and (number .. v) or (number .. "." .. v)
+		end
+		sc:insert(0, nml.text.Text(number .. " "))
+
+		nml.unit():add_content(nml.internal_link.InternalLink(h.ref.refname, sc))
+		nml.unit():add_content(nml.raw.RawInline("</li>"))
+	end
+	while depth > 0 do
+		nml.unit():add_content(nml.raw.RawBlock("</ul>"))
+		depth = depth - 1
+	end
+	nml.unit():add_content(nml.raw.RawBlock("</div>"))
+end
+EOF
